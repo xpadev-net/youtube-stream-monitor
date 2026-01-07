@@ -723,14 +723,53 @@ Worker Podが停止シグナル（SIGTERM）を受信した際の動作。
 
 ### 10.4 Gateway起動時の再整合 (Reconciliation)
 
-API Gatewayが再起動した場合、データベース上の監視状態と実際のKubernetes Podの状態を同期する。
+API Gatewayが再起動した場合、データベース上の監視状態と実際のKubernetes Podの状態を同期する。この処理は **Idempotent（冪等）** に設計され、何度実行しても安全でなければならない。
 
-1. **Startup**: Gateway起動時に実行。
-2. **List Pods**: ラベル `app=stream-monitor` を持つ全てのPodを取得。
-3. **DB Check**:
-    - DB上で `monitoring` だが Pod が存在しない -> `status=error` に更新し、Webhook通知 (monitor.error)。
-    - DB上で `stopped` だが Pod が存在する -> Podを削除。
-    - DBに存在しない Pod がある -> Podを削除 (Orphaned Pod)。
+#### 実行フロー
+
+1.  **Startup**: Gateway起動時に `ReconcileStartup` フェーズを開始。
+2.  **Deadline**: タイムアウト（デフォルト30秒、環境変数 `GATEWAY_RECONCILE_TIMEOUT` で設定可能）を設定。タイムアウト時は処理を中断し、部分的な結果をログ出力して `monitor.error` (reason: reconciliation_timeout) を発火する。
+3.  **Snapshot**: DB上の全アクティブ監視 (`status=monitoring`) と、K8s上の全Pod（ラベル `app=stream-monitor`）を取得。
+4.  **Reconciliation Actions**:
+    *   **Missing Pod**: DBで `monitoring` だが Pod がない場合
+        *   Action: `status=error` に更新し、Webhook通知 (`monitor.error`)。
+        *   Idempotency: DB更新は `UPDATE ... WHERE status = 'monitoring'` のように現在の状態を確認して行う（CAS的な挙動）。
+    *   **Zombie Pod**: DBで `stopped` または存在しないが Pod がある場合
+        *   Action: Podを削除。
+        *   Idempotency: Pod削除前にラベルと存在確認を行う。既に削除済みの場合は無視する。
+    *   **Orphaned Pod**: DBにレコードがない Pod がある場合
+        *   Action: Podを削除。
+
+#### エラーハンドリング
+
+*   **一時的エラー (Transient)**:
+    *   K8s API や DB 接続エラー時は、**指数バックオフ** (Exponential Backoff) を用いてリトライする。
+    *   リトライ上限を超えた場合、その個別の整合処理はスキップし、エラーログを記録する。
+*   **非ブロッキング**:
+    *   整合処理において永続的なエラーが発生しても、Gateway自体の起動プロセス（HTTPサーバーの開始など）をブロックしてはならない。
+    *   全ての整合結果は集約され、最後に「Startup Reconciliation Report」としてログ出力する。
+
+#### Webhook Payload Schema (`monitor.error`)
+
+再整合時に不整合が検出された場合、以下のペイロードでWebhookを送信する。
+
+```json
+{
+  "event_type": "monitor.error",
+  "monitor_id": "mon_xxxxxxxxxxxxxxxx",
+  "timestamp": "2024-01-15T20:15:30+09:00",
+  "data": {
+    "reason": "reconciliation_mismatch",
+    "reconciliation_action": "mark_as_error_missing_pod",
+    "previous_status": "monitoring",
+    "observed_state": {
+      "pod_exists": false,
+      "db_status": "monitoring"
+    },
+    "error_details": "Pod not found in Kubernetes cluster during startup reconciliation"
+  }
+}
+```
 
 ---
 
