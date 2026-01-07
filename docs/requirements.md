@@ -99,6 +99,9 @@ POST /api/v1/monitors
 | `config.start_delay_tolerance_sec` | int | - | 300 | 開始遅延許容時間（秒） |
 | `metadata` | object | - | {} | コールバック時に含める任意のメタデータ |
 
+#### 重複チェック
+同一の `stream_url` で既にアクティブな監視が存在する場合、HTTP 409 (Conflict) を返却する。
+
 #### レスポンス
 ```json
 {
@@ -165,6 +168,51 @@ GET /api/v1/monitors
 | `status` | string | フィルタ: `initializing`, `monitoring`, `stopped`, `error` |
 | `limit` | int | 取得件数上限（デフォルト: 50） |
 | `offset` | int | オフセット |
+
+#### レスポンス
+```json
+{
+  "monitors": [
+    {
+      "monitor_id": "mon_xxxxxxxxxxxxxxxx",
+      "stream_url": "https://www.youtube.com/watch?v=XXXXXXXXXXX",
+      "status": "monitoring",
+      "created_at": "2024-01-15T19:55:00+09:00"
+    }
+  ],
+  "pagination": {
+    "total": 15,
+    "limit": 50,
+    "offset": 0
+  }
+}
+```
+
+### 3.5 エラーレスポンス形式
+
+すべてのAPIエラーは以下の形式で返却される。
+
+```json
+{
+  "error": {
+    "code": "INVALID_URL",
+    "message": "The provided stream URL is not a valid YouTube watch URL"
+  }
+}
+```
+
+#### エラーコード一覧
+
+| コード | HTTPステータス | 説明 |
+|--------|---------------|------|
+| `INVALID_URL` | 400 | 無効なURLが指定された |
+| `INVALID_CONFIG` | 400 | 設定パラメータが不正 |
+| `UNAUTHORIZED` | 401 | API認証エラー |
+| `MONITOR_NOT_FOUND` | 404 | 指定された監視IDが存在しない |
+| `DUPLICATE_MONITOR` | 409 | 同一URLの監視が既に存在 |
+| `RATE_LIMIT_EXCEEDED` | 429 | レート制限超過 |
+| `MAX_MONITORS_EXCEEDED` | 429 | 最大同時監視数超過 |
+| `INTERNAL_ERROR` | 500 | サーバー内部エラー |
 
 ---
 
@@ -249,7 +297,7 @@ GET /api/v1/monitors
 | リトライ間隔 | 指数バックオフ（1秒, 2秒, 4秒） |
 | タイムアウト | 10秒 |
 | 成功判定 | HTTP 2xx レスポンス |
-| 失敗時処理 | 全リトライ失敗後、監視ジョブを削除 |
+| 失敗時処理 | 全リトライ失敗後、監視ジョブを削除（`monitor.error`イベントは発火しない） |
 
 ---
 
@@ -327,19 +375,25 @@ yt-dlp \
 │         ▼                                                        │
 │  2. セグメントダウンロード（.ts / .m4s）                          │
 │         │                                                        │
-│         ├──────────────────┬───────────────────┐                │
-│         ▼                  ▼                   ▼                │
-│  3a. 映像解析          3b. 音声解析        3c. 整合性チェック     │
-│  (FFmpeg/OpenCV)      (FFmpeg)            (シーケンス番号)        │
-│         │                  │                   │                │
-│         ▼                  ▼                   ▼                │
-│  4. 結果統合・異常判定                                            │
+│         ▼                                                        │
+│  3. 整合性チェック（シーケンス番号）                               │
 │         │                                                        │
 │         ▼                                                        │
-│  5. 異常検出時 → Webhook送信                                      │
+│  4. 映像解析（FFmpeg blackdetect）                                │
+│         │                                                        │
+│         ▼                                                        │
+│  5. 音声解析（FFmpeg silencedetect）                              │
+│         │                                                        │
+│         ▼                                                        │
+│  6. 結果統合・異常判定                                            │
+│         │                                                        │
+│         ▼                                                        │
+│  7. 異常検出時 → Webhook送信                                      │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+※ 各解析処理は順次実行される（並列実行しない）
 
 ### 6.2 映像解析（ブラックアウト検出）
 
@@ -412,6 +466,21 @@ if (無音状態から復旧) {
 | 発火イベント | `alert.segment_error` |
 | 説明 | セグメント取得失敗が1分間継続した場合にイベント発火 |
 
+### 6.6 一時ファイル管理
+
+#### 保存先
+```
+/tmp/segments/{monitor_id}/
+```
+
+#### クリーンアップ
+
+| タイミング | 動作 |
+|----------|------|
+| 解析完了後 | セグメントファイルを即時削除 |
+| Worker終了時 | ディレクトリごと削除 |
+| 異常終了時 | Kubernetes Podの削除により自動クリーンアップ |
+
 ---
 
 ## 7. 配信開始忘れ検出仕様
@@ -450,6 +519,26 @@ GET https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=XXX&forma
 | 配信開始前 | 30秒 |
 | 予定時刻超過後 | 10秒 |
 | 配信開始検出後 | セグメント解析モードへ移行 |
+
+### 7.4 配信終了検出
+
+監視中（monitoring状態）における配信終了は以下の方法で検出する。
+
+#### 検出方法
+
+| 方法 | 条件 | 説明 |
+|------|------|------|
+| HLSマニフェスト | `EXT-X-ENDLIST` タグ検出 | マニフェストに終了タグが含まれる場合 |
+| セグメント更新停止 | 60秒以上新規セグメントなし | マニフェスト更新はあるが新セグメントがない |
+| yt-dlp確認 | `is_live` が `false` | 定期的なステータスチェック（5分間隔） |
+
+#### 終了検出時の動作
+
+```
+1. `stream.ended` イベントを発火
+2. 監視状態を `completed` に遷移
+3. Worker Podを削除
+```
 
 ---
 
@@ -499,23 +588,46 @@ spec:
 │                               │                               │
 │                    yt-dlp実行・マニフェスト取得                │
 │                               │                               │
-│                               ▼                               │
-│                         [Monitoring]                          │
-│                               │                               │
-│              ┌────────────────┼────────────────┐             │
-│              ▼                ▼                ▼             │
-│         配信終了検出      停止API受信      エラー発生         │
-│              │                │                │             │
-│              ▼                ▼                ▼             │
-│         [Completed]      [Stopped]         [Error]           │
-│              │                │                │             │
-│              └────────────────┴────────────────┘             │
-│                               │                               │
-│                               ▼                               │
-│                       Pod即時削除                             │
+│                    ┌─────────┴─────────┐                     │
+│                    │                   │                     │
+│                  成功               失敗（yt-dlp等）          │
+│                    │                   │                     │
+│                    ▼                   ▼                     │
+│              [Monitoring]          [Error]                   │
+│                    │                   │                     │
+│     ┌──────────────┼──────────────┐    │                     │
+│     ▼              ▼              ▼    │                     │
+│ 配信終了検出   停止API受信    エラー発生 │                     │
+│     │              │              │    │                     │
+│     ▼              ▼              ▼    │                     │
+│ [Completed]    [Stopped]      [Error]  │                     │
+│     │              │              │    │                     │
+│     └──────────────┴──────────────┴────┘                     │
+│                         │                                     │
+│                         ▼                                     │
+│                  Pod即時削除                                  │
 │                                                               │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+### 8.3 Graceful Shutdown
+
+Worker Podが停止シグナル（SIGTERM）を受信した際の動作。
+
+| 順序 | 動作 |
+|------|------|
+| 1 | 新規セグメント取得を停止 |
+| 2 | 処理中のセグメント解析を完了 |
+| 3 | 未送信のWebhook通知を送信 |
+| 4 | 一時ファイルをクリーンアップ |
+| 5 | Podを終了 |
+
+#### タイムアウト
+
+| 項目 | 値 |
+|------|-----|
+| terminationGracePeriodSeconds | 30秒 |
+| 強制終了 | 30秒経過後にSIGKILL |
 
 ### 8.4 Pod削除ポリシー
 
@@ -531,7 +643,16 @@ spec:
 | 最大同時監視数 | 50件 |
 | 上限超過時 | HTTP 429 (Too Many Requests) を返却 |
 
-### 8.3 ヘルスチェック
+### 8.6 ヘルスチェック
+
+#### エンドポイント
+
+| パス | 用途 |
+|------|------|
+| `GET /healthz` | Livenessプローブ |
+| `GET /readyz` | Readinessプローブ |
+
+#### プローブ設定
 
 | チェック | 間隔 | タイムアウト | 失敗閾値 |
 |----------|------|-------------|----------|
@@ -561,14 +682,6 @@ spec:
 - blackout_events: INT
 - silence_events: INT
 - last_check_at: TIMESTAMPTZ
-
-
-#### アクティブ監視一覧
-```
-Key: monitors:active
-Type: Set
-Members: monitor_id のリスト
-```
 
 ---
 
@@ -635,14 +748,39 @@ Members: monitor_id のリスト
 
 ### 12.2 Webhook署名
 
+#### リクエストヘッダ
+
 ```
 X-Signature-256: sha256=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 X-Timestamp: 1705315000
 ```
 
-検証用ペイロード:
+#### 署名生成アルゴリズム
+
 ```
-{timestamp}.{request_body}
+signature = HMAC-SHA256(WEBHOOK_SIGNING_KEY, "{timestamp}.{request_body}")
+```
+
+| 項目 | 説明 |
+|------|------|
+| アルゴリズム | HMAC-SHA256 |
+| 署名キー | 環境変数 `WEBHOOK_SIGNING_KEY` |
+| 署名対象 | `{X-Timestampヘッダ値}.{リクエストボディ}` |
+| 出力形式 | `sha256=` + 16進数エンコードされたダイジェスト |
+
+#### 検証例（受信側）
+
+```python
+import hmac
+import hashlib
+
+def verify_signature(payload: bytes, signature: str, timestamp: str, secret: str) -> bool:
+    expected = hmac.new(
+        secret.encode(),
+        f"{timestamp}.".encode() + payload,
+        hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(f"sha256={expected}", signature)
 ```
 
 ### 12.3 レート制限
@@ -660,9 +798,9 @@ X-Timestamp: 1705315000
 
 | ツール | バージョン | 用途 |
 |--------|-----------|------|
-| yt-dlp | 最新安定版 | ストリームURL取得 |
-| FFmpeg | 5.0以上 | 映像・音声解析 |
-| streamlink | 最新安定版 | フォールバック用 |
+| yt-dlp | 2025.01.15 以上 | ストリームURL取得 |
+| FFmpeg | 7.1 以上 | 映像・音声解析 |
+| streamlink | 7.1.0 以上 | フォールバック用 |
 
 ### 13.2 外部ツール更新戦略
 
@@ -675,15 +813,15 @@ YouTubeの仕様変更に追従するため、以下の更新戦略を採用す�
 | FFmpeg | ベースイメージ更新時に追従（半年ごと目安） |
 | 緊急対応 | YouTube仕様変更検知時は手動で即時ビルド・デプロイ |
 
-### 13.3 Goライブラリ（推奨）
+### 13.3 Goライブラリ
 
-| ライブラリ | 用途 |
-|-----------|------|
-| `github.com/gin-gonic/gin` | HTTPフレームワーク |
-| `gorm.io/gorm` または `github.com/jackc/pgx` | PostgreSQLクライアント |
-| `k8s.io/client-go` | Kubernetes API |
-| `go.uber.org/zap` | ロギング |
-| `github.com/grafov/m3u8` | HLSマニフェスト解析 |
+| ライブラリ | バージョン | 用途 |
+|-----------|-----------|------|
+| `github.com/gin-gonic/gin` | v1.10.0 | HTTPフレームワーク |
+| `github.com/jackc/pgx/v5` | v5.7.2 | PostgreSQLクライアント |
+| `k8s.io/client-go` | v0.32.0 | Kubernetes API |
+| `go.uber.org/zap` | v1.27.0 | ロギング |
+| `github.com/grafov/m3u8` | v0.12.1 | HLSマニフェスト解析 |
 
 ---
 
@@ -815,3 +953,33 @@ stream-monitor/
 12. **外部ツール更新戦略**
     -   **決定**: CI/CDパイプラインで週次自動ビルド、yt-dlpは最新版を取得。
     -   **理由**: YouTubeの仕様変更への迅速な対応。
+
+### 2026-01-07: 要件定義書レビューに基づく追加変更
+
+13. **APIエラーレスポンス形式**
+    -   **決定**: 統一されたエラーレスポンス形式（`error.code`, `error.message`）を定義。
+    -   **理由**: クライアント側でのエラーハンドリングを容易にするため。
+
+14. **コールバック失敗時のイベント発火**
+    -   **決定**: 全リトライ失敗後、`monitor.error`イベントは発火せずにジョブを削除。
+    -   **理由**: コールバック先が無効な場合、エラーイベントも失敗する可能性が高いため。
+
+15. **配信終了検出方法**
+    -   **決定**: HLSの`EXT-X-ENDLIST`タグ、60秒以上のセグメント更新停止、定期的な`is_live`チェックで検出。
+    -   **理由**: 複数の検出方法を組み合わせることで確実な終了検出を実現。
+
+16. **一時ファイル管理**
+    -   **決定**: `/tmp/segments/{monitor_id}/`に保存し、解析完了後に即時削除。
+    -   **理由**: ディスク容量の効率的な利用とPod削除時の自動クリーンアップ。
+
+17. **Graceful Shutdown**
+    -   **決定**: SIGTERM受信時、処理中の解析完了・Webhook送信後に終了（タイムアウト30秒）。
+    -   **理由**: データ整合性の確保と通知の確実な送信。
+
+18. **セグメント解析の実行方式**
+    -   **決定**: 映像解析・音声解析は順次実行（並列実行しない）。
+    -   **理由**: 実装のシンプル化とリソース消費の予測可能性を優先。
+
+19. **ライブラリバージョン固定**
+    -   **決定**: 外部ツール・Goライブラリの推奨バージョンを明示的に指定。
+    -   **理由**: 再現可能なビルドと予期しない破壊的変更の回避。
