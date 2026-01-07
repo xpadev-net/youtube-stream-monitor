@@ -479,7 +479,7 @@ if (無音状態から復旧) {
 |----------|------|
 | 解析完了後 | セグメントファイルを即時削除 |
 | Worker終了時 | ディレクトリごと削除 |
-| 異常終了時 | Kubernetes Podの削除により自動クリーンアップ |
+| 異常終了時 | Kubernetes `emptyDir` ボリュームの使用により、Pod削除に伴い自動的に完全にクリーンアップされる |
 
 ---
 
@@ -555,9 +555,15 @@ metadata:
     app: stream-monitor
     monitor-id: "{monitor_id}"
 spec:
+  volumes:
+  - name: workdir
+    emptyDir: {}
   containers:
   - name: monitor
     image: stream-monitor:latest
+    volumeMounts:
+    - name: workdir
+      mountPath: /tmp/segments
     resources:
       requests:
         memory: "256Mi"
@@ -574,6 +580,10 @@ spec:
       value: "{callback_url}"
     - name: CONFIG_JSON
       value: '{...}'
+    - name: HTTP_PROXY
+      value: "{http_proxy}" # Optional
+    - name: HTTPS_PROXY
+      value: "{https_proxy}" # Optional
   restartPolicy: OnFailure
 ```
 
@@ -710,6 +720,17 @@ Worker Podが停止シグナル（SIGTERM）を受信した際の動作。
 | 失敗閾値 | 5回連続失敗 |
 | オープン状態維持時間 | 30秒 |
 | ハーフオープン時の試行数 | 1回 |
+
+### 10.4 Gateway起動時の再整合 (Reconciliation)
+
+API Gatewayが再起動した場合、データベース上の監視状態と実際のKubernetes Podの状態を同期する。
+
+1. **Startup**: Gateway起動時に実行。
+2. **List Pods**: ラベル `app=stream-monitor` を持つ全てのPodを取得。
+3. **DB Check**:
+    - DB上で `monitoring` だが Pod が存在しない -> `status=error` に更新し、Webhook通知 (monitor.error)。
+    - DB上で `stopped` だが Pod が存在する -> Podを削除。
+    - DBに存在しない Pod がある -> Podを削除 (Orphaned Pod)。
 
 ---
 
@@ -853,6 +874,7 @@ stream-monitor/
 | `WEBHOOK_SIGNING_KEY` | Webhook署名用キー | ○ |
 | `LOG_LEVEL` | ログレベル（debug/info/warn/error） | - |
 | `MAX_MONITORS` | 最大同時監視数（デフォルト: 50） | - |
+| `HTTP_PROXY` / `HTTPS_PROXY` | `yt-dlp` 使用時のプロキシ設定（IPブロック回避用） | - |
 
 
 ---
