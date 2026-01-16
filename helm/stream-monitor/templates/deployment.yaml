@@ -62,6 +62,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.existingSecrets.apiKeys | default (printf "%s-secrets" (include "stream-monitor.fullname" .)) }}
                   key: {{ .Values.existingSecrets.internalApiKeyKey | default "internal-api-key" }}
+            - name: WEBHOOK_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecrets.apiKeys | default (printf "%s-secrets" (include "stream-monitor.fullname" .)) }}
+                  key: {{ .Values.existingSecrets.webhookSigningKeyKey | default "webhook-signing-key" }}
           resources:
             {{- toYaml .Values.gateway.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

@@ -130,6 +130,9 @@ func (w *Worker) waitingMode(ctx context.Context) error {
 	delayAlertSent := false
 
 	for {
+		if w.getState() == StateError {
+			return fmt.Errorf("worker in error state")
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -184,6 +187,7 @@ func (w *Worker) waitingMode(ctx context.Context) error {
 					w.streamStatus = db.StreamStatusEnded
 					w.mu.Unlock()
 					w.setState(StateCompleted)
+					w.reportStatus(ctx, db.StatusCompleted, nil)
 					return nil
 				}
 			}
@@ -218,6 +222,9 @@ func (w *Worker) monitoringMode(ctx context.Context) error {
 	defer manifestRefreshTicker.Stop()
 
 	for {
+		if w.getState() == StateError {
+			return fmt.Errorf("worker in error state")
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

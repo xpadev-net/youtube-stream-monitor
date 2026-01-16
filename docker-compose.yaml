@@ -29,6 +29,7 @@ services:
       DATABASE_URL: "postgres://stream_monitor:dev_password@postgres:5432/stream_monitor?sslmode=disable"
       API_KEY: "dev-api-key-12345"
       INTERNAL_API_KEY: "dev-internal-key-67890"
+      WEBHOOK_SIGNING_KEY: "demo-signing-key"
       NAMESPACE: "default"
       WORKER_IMAGE: "stream-monitor-worker"
       WORKER_IMAGE_TAG: "latest"

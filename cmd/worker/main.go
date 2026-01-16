@@ -80,6 +80,9 @@ func main() {
 
 	// Create and run the worker
 	w := worker.NewWorker(cfg)
+	if len(cfg.Metadata) > 0 {
+		w.SetMetadata(cfg.Metadata)
+	}
 	if err := w.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Error("worker error", zap.Error(err))
 	}

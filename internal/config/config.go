@@ -22,6 +22,7 @@ type GatewayConfig struct {
 	// API Keys
 	APIKey         string
 	InternalAPIKey string
+	WebhookSigningKey string
 
 	// Kubernetes
 	Namespace       string
@@ -31,6 +32,7 @@ type GatewayConfig struct {
 	KubeConfigPath  string
 	MaxMonitors     int
 	ReconcileOnBoot bool
+	ReconcileTimeout time.Duration
 
 	// Timeouts
 	ReadTimeout     time.Duration
@@ -58,6 +60,7 @@ type WorkerConfig struct {
 	SilenceThreshold     time.Duration
 	SilenceDBThreshold   float64
 	DelayThreshold       time.Duration
+	Metadata             json.RawMessage
 
 	// Webhook
 	WebhookURL        string
@@ -86,6 +89,7 @@ func LoadGatewayConfig() (*GatewayConfig, error) {
 		DatabaseURL:     getEnv("DATABASE_URL", ""),
 		APIKey:          getEnv("API_KEY", ""),
 		InternalAPIKey:  getEnv("INTERNAL_API_KEY", ""),
+		WebhookSigningKey: getEnv("WEBHOOK_SIGNING_KEY", ""),
 		Namespace:       getEnv("NAMESPACE", "default"),
 		WorkerImage:     getEnv("WORKER_IMAGE", "stream-monitor-worker"),
 		WorkerImageTag:  getEnv("WORKER_IMAGE_TAG", "latest"),
@@ -93,6 +97,7 @@ func LoadGatewayConfig() (*GatewayConfig, error) {
 		KubeConfigPath:  getEnv("KUBECONFIG", ""),
 		MaxMonitors:     getEnvInt("MAX_MONITORS", 50),
 		ReconcileOnBoot: getEnvBool("RECONCILE_ON_BOOT", true),
+		ReconcileTimeout: getEnvDuration("RECONCILE_TIMEOUT", 30*time.Second),
 		ReadTimeout:     getEnvDuration("READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:    getEnvDuration("WRITE_TIMEOUT", 30*time.Second),
 		ShutdownTimeout: getEnvDuration("SHUTDOWN_TIMEOUT", 30*time.Second),
@@ -106,6 +111,9 @@ func LoadGatewayConfig() (*GatewayConfig, error) {
 	}
 	if cfg.InternalAPIKey == "" {
 		return nil, fmt.Errorf("INTERNAL_API_KEY is required")
+	}
+	if cfg.WebhookSigningKey == "" {
+		return nil, fmt.Errorf("WEBHOOK_SIGNING_KEY is required")
 	}
 
 	return cfg, nil
@@ -160,6 +168,14 @@ func LoadWorkerConfig() (*WorkerConfig, error) {
 		if monitorConfig.SilenceDBThreshold != 0 {
 			cfg.SilenceDBThreshold = monitorConfig.SilenceDBThreshold
 		}
+	}
+
+	if metadataJSON := os.Getenv("METADATA_JSON"); metadataJSON != "" {
+		var metadata json.RawMessage
+		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
+			return nil, fmt.Errorf("parse METADATA_JSON: %w", err)
+		}
+		cfg.Metadata = metadata
 	}
 
 	if cfg.MonitorID == "" {

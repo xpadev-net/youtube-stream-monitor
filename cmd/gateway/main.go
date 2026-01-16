@@ -16,7 +16,9 @@ import (
 	"github.com/xpadev-net/youtube-stream-tracker/internal/config"
 	"github.com/xpadev-net/youtube-stream-tracker/internal/db"
 	"github.com/xpadev-net/youtube-stream-tracker/internal/httpapi"
+	"github.com/xpadev-net/youtube-stream-tracker/internal/k8s"
 	"github.com/xpadev-net/youtube-stream-tracker/internal/log"
+	"github.com/xpadev-net/youtube-stream-tracker/internal/webhook"
 )
 
 func main() {
@@ -57,8 +59,22 @@ func main() {
 	// Create repository
 	repo := db.NewMonitorRepository(database)
 
+	// Create K8s client and reconciler
+	k8sClient, err := k8s.NewClient(k8s.Config{
+		InCluster:      cfg.InCluster,
+		KubeConfigPath: cfg.KubeConfigPath,
+		Namespace:      cfg.Namespace,
+		WorkerImage:    cfg.WorkerImage,
+		WorkerImageTag: cfg.WorkerImageTag,
+	})
+	if err != nil {
+		log.Fatal("failed to create k8s client", zap.Error(err))
+	}
+	webhookSender := webhook.NewSender(cfg.WebhookSigningKey)
+	reconciler := k8s.NewReconciler(k8sClient, repo, webhookSender, cfg.ReconcileTimeout)
+
 	// Create API handler
-	handler := api.NewHandler(repo, cfg.MaxMonitors)
+	handler := api.NewHandler(repo, cfg.MaxMonitors, reconciler, cfg.InternalAPIKey, cfg.WebhookSigningKey)
 
 	// Set Gin mode based on environment
 	if cfg.Environment == "production" {

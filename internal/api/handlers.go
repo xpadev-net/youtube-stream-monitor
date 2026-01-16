@@ -16,6 +16,7 @@ import (
 	"github.com/xpadev-net/youtube-stream-tracker/internal/db"
 	"github.com/xpadev-net/youtube-stream-tracker/internal/httpapi"
 	"github.com/xpadev-net/youtube-stream-tracker/internal/ids"
+	"github.com/xpadev-net/youtube-stream-tracker/internal/k8s"
 	"github.com/xpadev-net/youtube-stream-tracker/internal/log"
 )
 
@@ -23,15 +24,21 @@ var youtubeWatchURLRegex = regexp.MustCompile(`^https?://(www\.)?youtube\.com/wa
 
 // Handler holds dependencies for API handlers.
 type Handler struct {
-	repo        *db.MonitorRepository
-	maxMonitors int
+	repo               *db.MonitorRepository
+	maxMonitors        int
+	reconciler         *k8s.Reconciler
+	internalAPIKey     string
+	webhookSigningKey  string
 }
 
 // NewHandler creates a new API handler.
-func NewHandler(repo *db.MonitorRepository, maxMonitors int) *Handler {
+func NewHandler(repo *db.MonitorRepository, maxMonitors int, reconciler *k8s.Reconciler, internalAPIKey, webhookSigningKey string) *Handler {
 	return &Handler{
-		repo:        repo,
-		maxMonitors: maxMonitors,
+		repo:              repo,
+		maxMonitors:       maxMonitors,
+		reconciler:        reconciler,
+		internalAPIKey:    internalAPIKey,
+		webhookSigningKey: webhookSigningKey,
 	}
 }
 
@@ -147,6 +154,20 @@ func (h *Handler) CreateMonitor(c *gin.Context) {
 		zap.String("monitor_id", monitor.ID),
 		zap.String("stream_url", monitor.StreamURL),
 	)
+
+	if h.reconciler == nil {
+		log.Error("k8s reconciler not configured")
+		_ = h.repo.UpdateStatus(c.Request.Context(), monitor.ID, db.StatusError)
+		httpapi.RespondInternalError(c, "Failed to start worker pod")
+		return
+	}
+
+	if err := h.reconciler.CreateMonitorPod(c.Request.Context(), monitor, h.internalAPIKey, h.webhookSigningKey); err != nil {
+		log.Error("failed to create worker pod", zap.Error(err))
+		_ = h.repo.UpdateStatus(c.Request.Context(), monitor.ID, db.StatusError)
+		httpapi.RespondInternalError(c, "Failed to start worker pod")
+		return
+	}
 
 	httpapi.RespondCreated(c, CreateMonitorResponse{
 		MonitorID: monitor.ID,
