@@ -10,6 +10,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["create", "delete", "get", "list", "watch"]
+  # Service discovery for gateway internal base URL
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
   # Pod logs for debugging
   - apiGroups: [""]
     resources: ["pods/log"]

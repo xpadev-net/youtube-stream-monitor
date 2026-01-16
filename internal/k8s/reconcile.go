@@ -214,10 +214,15 @@ func (r *Reconciler) sendErrorWebhook(ctx context.Context, monitor *db.Monitor, 
 
 // CreateMonitorPod creates a pod for a monitor and updates the pod_name in DB.
 func (r *Reconciler) CreateMonitorPod(ctx context.Context, monitor *db.Monitor, internalAPIKey, webhookSigningKey string) error {
+	gatewayBaseURL, err := r.k8sClient.GetGatewayInternalBaseURL(ctx)
+	if err != nil {
+		return fmt.Errorf("get gateway internal base URL: %w", err)
+	}
+
 	params := CreatePodParams{
 		MonitorID:         monitor.ID,
 		StreamURL:         monitor.StreamURL,
-		CallbackURL:       monitor.CallbackURL,
+		CallbackURL:       gatewayBaseURL,
 		InternalAPIKey:    internalAPIKey,
 		WebhookURL:        monitor.CallbackURL,
 		WebhookSigningKey: webhookSigningKey,

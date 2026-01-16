@@ -54,7 +54,7 @@ func (r *MonitorRepository) Create(ctx context.Context, params CreateMonitorPara
 	}
 
 	var monitor Monitor
-	err = r.db.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO monitors (id, stream_url, callback_url, config, metadata, status)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, stream_url, callback_url, config, metadata, status, pod_name, created_at, updated_at
@@ -82,7 +82,7 @@ func (r *MonitorRepository) Create(ctx context.Context, params CreateMonitorPara
 	}
 
 	// Create associated stats record
-	_, err = r.db.pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		INSERT INTO monitor_stats (monitor_id, video_health, audio_health, stream_status)
 		VALUES ($1, $2, $3, $4)
 	`, params.ID, HealthUnknown, HealthUnknown, StreamStatusUnknown)

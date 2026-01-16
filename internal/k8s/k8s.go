@@ -196,6 +196,43 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 	return created, nil
 }
 
+// GetGatewayInternalBaseURL returns the base URL for the gateway internal API.
+func (c *Client) GetGatewayInternalBaseURL(ctx context.Context) (string, error) {
+	services, err := c.clientset.CoreV1().Services(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/component=gateway",
+	})
+	if err != nil {
+		return "", fmt.Errorf("list gateway services: %w", err)
+	}
+	if len(services.Items) == 0 {
+		return "", fmt.Errorf("no gateway service found")
+	}
+
+	if len(services.Items) > 1 {
+		log.Warn("multiple gateway services found, using first",
+			zap.Int("count", len(services.Items)),
+		)
+	}
+
+	service := services.Items[0]
+	if len(service.Spec.Ports) == 0 {
+		return "", fmt.Errorf("gateway service has no ports")
+	}
+
+	port := service.Spec.Ports[0].Port
+	for _, svcPort := range service.Spec.Ports {
+		if svcPort.Name == "http" {
+			port = svcPort.Port
+			break
+		}
+	}
+	if port == 0 {
+		return "", fmt.Errorf("gateway service port is zero")
+	}
+
+	return fmt.Sprintf("http://%s:%d", service.Name, port), nil
+}
+
 // DeleteWorkerPod deletes a worker pod.
 func (c *Client) DeleteWorkerPod(ctx context.Context, monitorID string) error {
 	podName := PodNamePrefix + monitorID

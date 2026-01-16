@@ -1,10 +1,13 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/xpadev-net/youtube-stream-tracker/internal/db"
 )
 
 // GatewayConfig holds configuration for the API Gateway.
@@ -53,6 +56,7 @@ type WorkerConfig struct {
 	AnalysisInterval     time.Duration
 	BlackoutThreshold    time.Duration
 	SilenceThreshold     time.Duration
+	SilenceDBThreshold   float64
 	DelayThreshold       time.Duration
 
 	// Webhook
@@ -128,7 +132,34 @@ func LoadWorkerConfig() (*WorkerConfig, error) {
 		AnalysisInterval:     getEnvDuration("ANALYSIS_INTERVAL", 10*time.Second),
 		BlackoutThreshold:    getEnvDuration("BLACKOUT_THRESHOLD", 5*time.Second),
 		SilenceThreshold:     getEnvDuration("SILENCE_THRESHOLD", 5*time.Second),
+		SilenceDBThreshold:   db.DefaultMonitorConfig().SilenceDBThreshold,
 		DelayThreshold:       getEnvDuration("DELAY_THRESHOLD", 300*time.Second),
+	}
+
+	if configJSON := os.Getenv("CONFIG_JSON"); configJSON != "" {
+		var monitorConfig db.MonitorConfig
+		if err := json.Unmarshal([]byte(configJSON), &monitorConfig); err != nil {
+			return nil, fmt.Errorf("parse CONFIG_JSON: %w", err)
+		}
+
+		if monitorConfig.ScheduledStartTime != nil {
+			cfg.ScheduledStartTime = monitorConfig.ScheduledStartTime
+		}
+		if monitorConfig.CheckIntervalSec > 0 {
+			cfg.AnalysisInterval = time.Duration(monitorConfig.CheckIntervalSec) * time.Second
+		}
+		if monitorConfig.BlackoutThresholdSec > 0 {
+			cfg.BlackoutThreshold = time.Duration(monitorConfig.BlackoutThresholdSec) * time.Second
+		}
+		if monitorConfig.SilenceThresholdSec > 0 {
+			cfg.SilenceThreshold = time.Duration(monitorConfig.SilenceThresholdSec) * time.Second
+		}
+		if monitorConfig.StartDelayToleranceSec > 0 {
+			cfg.DelayThreshold = time.Duration(monitorConfig.StartDelayToleranceSec) * time.Second
+		}
+		if monitorConfig.SilenceDBThreshold != 0 {
+			cfg.SilenceDBThreshold = monitorConfig.SilenceDBThreshold
+		}
 	}
 
 	if cfg.MonitorID == "" {

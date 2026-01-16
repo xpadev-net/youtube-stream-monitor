@@ -44,20 +44,25 @@ type Analyzer struct {
 	ffmpegPath  string
 	ffprobePath string
 	tmpDir      string
+	silenceDBThreshold float64
 }
 
 // NewAnalyzer creates a new FFmpeg analyzer.
-func NewAnalyzer(ffmpegPath, ffprobePath, tmpDir string) *Analyzer {
+func NewAnalyzer(ffmpegPath, ffprobePath, tmpDir string, silenceDBThreshold float64) *Analyzer {
 	if ffmpegPath == "" {
 		ffmpegPath = "ffmpeg"
 	}
 	if ffprobePath == "" {
 		ffprobePath = "ffprobe"
 	}
+	if silenceDBThreshold == 0 {
+		silenceDBThreshold = -50
+	}
 	return &Analyzer{
 		ffmpegPath:  ffmpegPath,
 		ffprobePath: ffprobePath,
 		tmpDir:      tmpDir,
+		silenceDBThreshold: silenceDBThreshold,
 	}
 }
 
@@ -185,7 +190,7 @@ func (a *Analyzer) detectSilence(ctx context.Context, filePath string, totalDura
 	// d=0.5: minimum silence duration
 	args := []string{
 		"-i", filePath,
-		"-af", "silencedetect=n=-50dB:d=0.5",
+		"-af", fmt.Sprintf("silencedetect=n=%gdB:d=0.5", a.silenceDBThreshold),
 		"-vn",
 		"-f", "null",
 		"-",

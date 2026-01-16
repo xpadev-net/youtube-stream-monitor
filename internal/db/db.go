@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
@@ -96,6 +97,21 @@ func (db *DB) BeginTx(ctx context.Context) (*Tx, error) {
 // Tx wraps a database transaction.
 type Tx struct {
 	tx pgx.Tx
+}
+
+// Exec executes a query without returning rows.
+func (t *Tx) Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+	return t.tx.Exec(ctx, sql, args...)
+}
+
+// QueryRow executes a query expected to return at most one row.
+func (t *Tx) QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
+	return t.tx.QueryRow(ctx, sql, args...)
+}
+
+// Query executes a query that returns rows.
+func (t *Tx) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	return t.tx.Query(ctx, sql, args...)
 }
 
 // Commit commits the transaction.
