@@ -21,6 +21,8 @@
 - [x] (2026-01-17) Kubernetes 統合（GatewayがPodを create/delete/list/watch、Pod名/ラベル/環境変数の要件準拠）を実装し、Kind等で動作確認する。
 - [x] (2026-01-17) Helmチャート雛形とRBACを追加し、`helm install` でデプロイできる状態にする。
 - [x] (2026-01-17) 起動時再整合（ReconcileStartup）を実装し、DBとPodの不整合を解消できることをログとWebhookで確認する。
+- [ ] (2026-01-24) Gateway起動時にReconcileStartupを実行する処理を`cmd/gateway/main.go`に追加する（`ReconcileOnBoot`設定が有効な場合のみ）。
+- [ ] (2026-01-24) `DELETE /api/v1/monitors/{monitor_id}` ハンドラー（`internal/api/handlers.go`の`DeleteMonitor`）で、監視停止時にWorker Podを削除する処理を追加する。
 - [ ] (2026-01-17) 最低限のテスト（ユニット + 重要パスの統合）と、ローカル/Kindでの検証手順をこのExecPlanの「Concrete Steps」「Validation and Acceptance」に確定させる。
 
 ## Surprises & Discoveries
@@ -31,6 +33,10 @@
 
 Observation: （何が想定外だったかを1文で）
 Evidence: （ログ/テスト出力を1〜5行で。長くしない）
+
+Observation: ReconcileStartup関数は実装済みだが、Gateway起動時に実際に呼び出されていない。また、DeleteMonitorでPod削除が行われていない。
+Evidence: `cmd/gateway/main.go`を確認したところ、`reconciler.ReconcileStartup`の呼び出しがない。`internal/api/handlers.go`の`DeleteMonitor`メソッドで、`reconciler.DeleteMonitorPod`の呼び出しがない。
+Date: 2026-01-24
 
 ## Decision Log
 
@@ -139,6 +145,8 @@ Worker はこの時点では「ダミーの状態報告」をするだけでよ�
 
 ここで満たすべき要件は明確に固定される。Pod名は `stream-monitor-{monitor_id}` の形式にし、ラベルは `app=stream-monitor` と `monitor-id={monitor_id}` を付ける。環境変数として `MONITOR_ID`, `STREAM_URL`, `CALLBACK_URL`, `CONFIG_JSON` を必須で渡し、`HTTP_PROXY/HTTPS_PROXY` は任意で渡せるようにする。Podの `restartPolicy` は `OnFailure` とする。
 
+**補足（2026-01-24）**: `DELETE /api/v1/monitors/{monitor_id}` でPod削除の実装が未完了。`internal/api/handlers.go`の`DeleteMonitor`メソッドで、`reconciler.DeleteMonitorPod`を呼び出す処理を追加する必要がある。エラーが発生してもDB更新は成功しているため、ログに記録するが処理は継続する。
+
 ### Milestone 9: Helm/RBAC と、起動時再整合（ReconcileStartup）を実装する
 
 この段階のゴールは、Helmチャートで Gateway（Deployment）と必要リソース（Service, ConfigMap/Secret, ServiceAccount, Role/RoleBinding）が作成できること、そして Gateway 再起動時に DB の `monitoring` と K8s 上の Pod の不整合を検知して解消できること。
@@ -146,6 +154,8 @@ Worker はこの時点では「ダミーの状態報告」をするだけでよ�
 再整合の要件（`docs/requirements.md` 10.4）で重要なのは「冪等」「タイムアウト」「Missing/Zombie/Orphaned の扱い」「部分失敗でもGateway起動をブロックしない」。
 
 このマイルストーンで、再整合時の `monitor.error` Webhook ペイロード（reasonやobserved_state含む）も要件に沿って送れるようにする。ただし「Webhook送信先が無効な場合は errorイベントも飛ばさずジョブ削除」という別要件との整合も必要なので、再整合の error 通知は「送れたら送るが、送れない場合の振る舞い」を明確に決め、Decision Log に記録する。
+
+**補足（2026-01-24）**: `ReconcileStartup`関数は実装済みだが、`cmd/gateway/main.go`の`main`関数で実際に呼び出されていない。`cfg.ReconcileOnBoot`が`true`の場合、HTTPサーバー起動前に`reconciler.ReconcileStartup(ctx)`を呼び出す処理を追加する必要がある。エラーが発生してもGateway起動をブロックしない（非ブロッキング）。
 
 ## Concrete Steps
 
@@ -179,6 +189,19 @@ Docker Composeを使用してPostgreSQLとGatewayを起動する。
 
     curl -X DELETE http://localhost:8080/api/v1/monitors/{monitor_id} -H "X-API-Key: dev-api-key-12345"
 
+### 監視停止とPod削除の確認
+
+監視を停止し、対応するWorker Podが削除されることを確認する。
+
+    # 監視を停止
+    curl -X DELETE http://localhost:8080/api/v1/monitors/{monitor_id} \
+      -H "X-API-Key: dev-api-key-12345"
+
+    # KubernetesでPodが削除されたことを確認（K8s環境の場合）
+    kubectl get pods -l app=stream-monitor,monitor-id={monitor_id}
+
+期待する観察結果は、APIレスポンスで`status=stopped`が返り、Kubernetes上で対応するPodが削除されること。
+
 ### Webhook受信デモの起動
 
     docker compose up webhook-demo
@@ -209,6 +232,14 @@ Milestone 7（Webhook）完了の受け入れ例。
 Milestone 8/9（K8s/Helm/再整合）完了の受け入れ例。
 
 Kind（またはMinikube）にデプロイし、`POST /api/v1/monitors` で Pod が作られ、Pod の env/labels が要件通りであること。Gateway を再起動しても、DBが `monitoring` なのにPodが無い状態を検出し、要件の `monitor.error` を送れること（送れない場合の扱いはDecision Logで明確化し、少なくともGateway起動がブロックされないこと）。
+
+**Milestone 8補完（Pod削除）完了の受け入れ例（2026-01-24追加）**:
+
+`DELETE /api/v1/monitors/{monitor_id}` を呼ぶと、DBのstatusが`stopped`に更新され、同時にKubernetes上で対応するWorker Pod（`stream-monitor-{monitor_id}`）が削除されること。Pod削除に失敗しても、DB更新は成功し、エラーログが記録されること。
+
+**Milestone 9補完（起動時再整合実行）完了の受け入れ例（2026-01-24追加）**:
+
+Gatewayを起動し、`RECONCILE_ON_BOOT=true`（デフォルト）の場合、起動ログに「starting reconciliation」が記録され、再整合処理が実行されること。DBに`status=monitoring`の監視があるがPodが存在しない場合、監視が`error`状態に更新され、`monitor.error` Webhookが送信されること。再整合処理が失敗しても、Gatewayの起動はブロックされないこと。
 
 ## Idempotence and Recovery
 
