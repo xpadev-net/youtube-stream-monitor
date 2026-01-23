@@ -76,6 +76,22 @@ func main() {
 	// Create API handler
 	handler := api.NewHandler(repo, cfg.MaxMonitors, reconciler, cfg.InternalAPIKey, cfg.WebhookSigningKey)
 
+	// Run reconciliation on boot if enabled
+	if cfg.ReconcileOnBoot {
+		log.Info("reconciliation on boot enabled, starting reconciliation")
+		result, err := reconciler.ReconcileStartup(ctx)
+		if err != nil {
+			log.Error("reconciliation failed", zap.Error(err))
+		} else {
+			log.Info("reconciliation completed",
+				zap.Int("missing_pods", result.MissingPods),
+				zap.Int("zombie_pods", result.ZombiePods),
+				zap.Int("orphaned_pods", result.OrphanedPods),
+				zap.Int("errors", len(result.Errors)),
+			)
+		}
+	}
+
 	// Set Gin mode based on environment
 	if cfg.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
