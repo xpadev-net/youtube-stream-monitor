@@ -65,13 +65,21 @@ func TestVerifySignature(t *testing.T) {
 
 	// Test expired timestamp (more than 5 minutes old)
 	oldTimestamp := time.Now().Unix() - 400 // 400 seconds = more than 5 minutes
-	if VerifySignature(signingKey, signature, oldTimestamp, body) {
+	oldMessage := fmt.Sprintf("%d.%s", oldTimestamp, string(body))
+	oldMac := hmac.New(sha256.New, []byte(signingKey))
+	oldMac.Write([]byte(oldMessage))
+	oldSignature := hex.EncodeToString(oldMac.Sum(nil))
+	if VerifySignature(signingKey, oldSignature, oldTimestamp, body) {
 		t.Error("VerifySignature() = true, want false for expired timestamp")
 	}
 
 	// Test future timestamp (more than 5 minutes ahead)
 	futureTimestamp := time.Now().Unix() + 400 // 400 seconds = more than 5 minutes
-	if VerifySignature(signingKey, signature, futureTimestamp, body) {
+	futureMessage := fmt.Sprintf("%d.%s", futureTimestamp, string(body))
+	futureMac := hmac.New(sha256.New, []byte(signingKey))
+	futureMac.Write([]byte(futureMessage))
+	futureSignature := hex.EncodeToString(futureMac.Sum(nil))
+	if VerifySignature(signingKey, futureSignature, futureTimestamp, body) {
 		t.Error("VerifySignature() = true, want false for future timestamp")
 	}
 }
