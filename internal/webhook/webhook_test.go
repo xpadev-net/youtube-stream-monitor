@@ -1,10 +1,14 @@
 package webhook
 
 import (
+	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -97,5 +101,79 @@ func TestNewSender(t *testing.T) {
 
 	if sender.httpClient.Timeout != 10*time.Second {
 		t.Errorf("NewSender().httpClient.Timeout = %v, want 10s", sender.httpClient.Timeout)
+	}
+}
+
+type mockTransport struct {
+	roundTrip func(*http.Request) (*http.Response, error)
+}
+
+func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return m.roundTrip(req)
+}
+
+func TestSender_Send_RetryTimestamp(t *testing.T) {
+	sender := NewSender("test-secret")
+	
+	var requestBodies [][]byte
+	var timestamps []string // X-Timestamp header
+
+	mock := &mockTransport{
+		roundTrip: func(req *http.Request) (*http.Response, error) {
+			// Capture body
+			body, _ := io.ReadAll(req.Body)
+			requestBodies = append(requestBodies, body)
+			req.Body.Close()
+			// Create a new body for the request in case it's used again (though here we just consumed it)
+			// Actually, since we read it, if the code tries to read it again it might fail if we don't restore it.
+			// But the Sender logic is: marshal body -> loop { sendOnce(body) }.
+			// sendOnce makes a new request with bytes.NewReader(body).
+			// So the body IS safe to read fully here as it is a fresh reader each time.
+			
+			timestamps = append(timestamps, req.Header.Get("X-Timestamp"))
+
+			if len(requestBodies) == 1 {
+				return nil, fmt.Errorf("network error")
+			}
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(bytes.NewBufferString("{}")),
+			}, nil
+		},
+	}
+	sender.httpClient.Transport = mock
+	sender.maxRetries = 2 // 2 attempts total (1 initial + 1 retry)
+
+	payload := &Payload{
+		EventType: "test_event",
+		MonitorID: "mon-test",
+		Timestamp: time.Now(),
+	}
+
+	ctx := context.Background()
+	result := sender.Send(ctx, "http://example.com", payload)
+
+	if !result.Success {
+		t.Errorf("Send failed: %v", result.Error)
+	}
+	if result.Attempts != 2 {
+		t.Errorf("expected 2 attempts, got %d", result.Attempts)
+	}
+
+	if len(requestBodies) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(requestBodies))
+	}
+
+	// Verify bodies are identical
+	if string(requestBodies[0]) != string(requestBodies[1]) {
+		t.Errorf("request bodies differ between retries:\n%s\nvs\n%s", requestBodies[0], requestBodies[1])
+	}
+	
+	// Verify timestamp in body is consistent
+	// We can decode to map to check specifically the timestamp field, or just string compare (which we did).
+	
+	// Verify X-Timestamp changes (as it reflects transmission time)
+	if timestamps[0] == timestamps[1] {
+		t.Errorf("X-Timestamp header should change between retries, got same: %s", timestamps[0])
 	}
 }
