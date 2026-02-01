@@ -166,12 +166,30 @@ func (p *Parser) IsEndList(ctx context.Context, manifestURL string) (bool, error
 		return false, fmt.Errorf("decode manifest: %w", err)
 	}
 
-	if listType != m3u8.MEDIA {
-		return false, nil
+	switch listType {
+	case m3u8.MEDIA:
+		mediapl := playlist.(*m3u8.MediaPlaylist)
+		return mediapl.Closed, nil
+	case m3u8.MASTER:
+		masterpl := playlist.(*m3u8.MasterPlaylist)
+		if len(masterpl.Variants) == 0 {
+			return false, fmt.Errorf("master playlist has no variants")
+		}
+		// Pick first variant (keep selection logic simple / consistent with getLatestHLSSegment)
+		baseURL, err := url.Parse(manifestURL)
+		if err != nil {
+			return false, fmt.Errorf("parse manifest URL: %w", err)
+		}
+		variant := masterpl.Variants[0]
+		mediaURL, err := resolveURL(baseURL, variant.URI)
+		if err != nil {
+			return false, fmt.Errorf("resolve variant URL: %w", err)
+		}
+		// recursively call IsEndList for the resolved media playlist
+		return p.IsEndList(ctx, mediaURL)
+	default:
+		return false, fmt.Errorf("unknown playlist type")
 	}
-
-	mediapl := playlist.(*m3u8.MediaPlaylist)
-	return mediapl.Closed, nil
 }
 
 // getLatestDASHSegment retrieves the latest segment from a DASH manifest.

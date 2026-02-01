@@ -114,7 +114,7 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestSender_Send_RetryTimestamp(t *testing.T) {
 	sender := NewSender("test-secret")
-	
+
 	var requestBodies [][]byte
 	var timestamps []string // X-Timestamp header
 
@@ -129,7 +129,7 @@ func TestSender_Send_RetryTimestamp(t *testing.T) {
 			// But the Sender logic is: marshal body -> loop { sendOnce(body) }.
 			// sendOnce makes a new request with bytes.NewReader(body).
 			// So the body IS safe to read fully here as it is a fresh reader each time.
-			
+
 			timestamps = append(timestamps, req.Header.Get("X-Timestamp"))
 
 			if len(requestBodies) == 1 {
@@ -168,10 +168,10 @@ func TestSender_Send_RetryTimestamp(t *testing.T) {
 	if string(requestBodies[0]) != string(requestBodies[1]) {
 		t.Errorf("request bodies differ between retries:\n%s\nvs\n%s", requestBodies[0], requestBodies[1])
 	}
-	
+
 	// Verify timestamp in body is consistent
 	// We can decode to map to check specifically the timestamp field, or just string compare (which we did).
-	
+
 	// Verify X-Timestamp changes (as it reflects transmission time)
 	if timestamps[0] == timestamps[1] {
 		t.Errorf("X-Timestamp header should change between retries, got same: %s", timestamps[0])

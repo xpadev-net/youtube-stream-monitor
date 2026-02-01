@@ -26,11 +26,11 @@ type ReconcileResult struct {
 
 // Reconciler handles reconciliation between DB and K8s state.
 type Reconciler struct {
-	k8sClient     *Client
-	repo          *db.MonitorRepository
-	webhookSender *webhook.Sender
+	k8sClient                *Client
+	repo                     *db.MonitorRepository
+	webhookSender            *webhook.Sender
 	reconciliationWebhookURL string
-	timeout       time.Duration
+	timeout                  time.Duration
 }
 
 // NewReconciler creates a new reconciler.
@@ -39,11 +39,11 @@ func NewReconciler(k8sClient *Client, repo *db.MonitorRepository, webhookSender 
 		timeout = 30 * time.Second
 	}
 	return &Reconciler{
-		k8sClient:     k8sClient,
-		repo:          repo,
-		webhookSender: webhookSender,
+		k8sClient:                k8sClient,
+		repo:                     repo,
+		webhookSender:            webhookSender,
 		reconciliationWebhookURL: reconciliationWebhookURL,
-		timeout:       timeout,
+		timeout:                  timeout,
 	}
 }
 

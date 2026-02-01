@@ -11,15 +11,15 @@ type ErrorCode string
 
 const (
 	// Client errors
-	ErrCodeBadRequest       ErrorCode = "BAD_REQUEST"
-	ErrCodeUnauthorized     ErrorCode = "UNAUTHORIZED"
-	ErrCodeForbidden        ErrorCode = "FORBIDDEN"
-	ErrCodeNotFound         ErrorCode = "NOT_FOUND"
-	ErrCodeDuplicateMonitor ErrorCode = "DUPLICATE_MONITOR"
-	ErrCodeMaxMonitors      ErrorCode = "MAX_MONITORS_EXCEEDED"
-	ErrCodeValidation       ErrorCode = "VALIDATION_ERROR"
-	ErrCodeInvalidURL       ErrorCode = "INVALID_URL"
-	ErrCodeInvalidConfig    ErrorCode = "INVALID_CONFIG"
+	ErrCodeBadRequest        ErrorCode = "BAD_REQUEST"
+	ErrCodeUnauthorized      ErrorCode = "UNAUTHORIZED"
+	ErrCodeForbidden         ErrorCode = "FORBIDDEN"
+	ErrCodeNotFound          ErrorCode = "NOT_FOUND"
+	ErrCodeDuplicateMonitor  ErrorCode = "DUPLICATE_MONITOR"
+	ErrCodeMaxMonitors       ErrorCode = "MAX_MONITORS_EXCEEDED"
+	ErrCodeValidation        ErrorCode = "VALIDATION_ERROR"
+	ErrCodeInvalidURL        ErrorCode = "INVALID_URL"
+	ErrCodeInvalidConfig     ErrorCode = "INVALID_CONFIG"
 	ErrCodeRateLimitExceeded ErrorCode = "RATE_LIMIT_EXCEEDED"
 
 	// Server errors

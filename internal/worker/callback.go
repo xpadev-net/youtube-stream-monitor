@@ -42,9 +42,9 @@ type StatusUpdate struct {
 
 // StatusRequest is the request body for status update.
 type StatusRequest struct {
-	Status string `json:"status"`
+	Status       string `json:"status"`
 	StreamStatus string `json:"stream_status,omitempty"`
-	Health *struct {
+	Health       *struct {
 		Video string `json:"video"`
 		Audio string `json:"audio"`
 	} `json:"health,omitempty"`

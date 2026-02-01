@@ -402,9 +402,9 @@ func (h *Handler) ListMonitors(c *gin.Context) {
 
 // UpdateStatusRequest represents the request body for updating monitor status (internal API).
 type UpdateStatusRequest struct {
-	Status string `json:"status" binding:"required"`
+	Status       string `json:"status" binding:"required"`
 	StreamStatus string `json:"stream_status,omitempty"`
-	Health *struct {
+	Health       *struct {
 		Video string `json:"video"`
 		Audio string `json:"audio"`
 	} `json:"health,omitempty"`
@@ -464,16 +464,51 @@ func (h *Handler) UpdateMonitorStatus(c *gin.Context) {
 			now := time.Now()
 			stats.LastCheckAt = &now
 
+			// Validate stream_status
 			if req.StreamStatus != "" {
-				stats.StreamStatus = db.StreamStatus(req.StreamStatus)
+				ss := db.StreamStatus(req.StreamStatus)
+				validStream := map[db.StreamStatus]bool{
+					db.StreamStatusUnknown:   true,
+					db.StreamStatusScheduled: true,
+					db.StreamStatusLive:      true,
+					db.StreamStatusEnded:     true,
+				}
+				if !validStream[ss] {
+					httpapi.RespondValidationError(c, "invalid stream_status: "+req.StreamStatus)
+					return
+				}
+				stats.StreamStatus = ss
 			}
 
+			// Validate health fields
 			if req.Health != nil {
 				if req.Health.Video != "" {
-					stats.VideoHealth = db.HealthStatus(req.Health.Video)
+					vh := db.HealthStatus(req.Health.Video)
+					validHealth := map[db.HealthStatus]bool{
+						db.HealthOK:      true,
+						db.HealthWarning: true,
+						db.HealthError:   true,
+						db.HealthUnknown: true,
+					}
+					if !validHealth[vh] {
+						httpapi.RespondValidationError(c, "invalid health.video: "+req.Health.Video)
+						return
+					}
+					stats.VideoHealth = vh
 				}
 				if req.Health.Audio != "" {
-					stats.AudioHealth = db.HealthStatus(req.Health.Audio)
+					ah := db.HealthStatus(req.Health.Audio)
+					validHealth := map[db.HealthStatus]bool{
+						db.HealthOK:      true,
+						db.HealthWarning: true,
+						db.HealthError:   true,
+						db.HealthUnknown: true,
+					}
+					if !validHealth[ah] {
+						httpapi.RespondValidationError(c, "invalid health.audio: "+req.Health.Audio)
+						return
+					}
+					stats.AudioHealth = ah
 				}
 			}
 			if req.Statistics != nil {
