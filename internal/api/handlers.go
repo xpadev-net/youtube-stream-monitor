@@ -444,6 +444,43 @@ func (h *Handler) UpdateMonitorStatus(c *gin.Context) {
 		return
 	}
 
+	// Pre-validate incoming enum-like fields before any DB operations to avoid partial writes
+	if req.StreamStatus != "" {
+		ss := db.StreamStatus(req.StreamStatus)
+		validStream := map[db.StreamStatus]bool{
+			db.StreamStatusUnknown:   true,
+			db.StreamStatusScheduled: true,
+			db.StreamStatusLive:      true,
+			db.StreamStatusEnded:     true,
+		}
+		if !validStream[ss] {
+			httpapi.RespondValidationError(c, "invalid stream_status: "+req.StreamStatus)
+			return
+		}
+	}
+	if req.Health != nil {
+		validHealth := map[db.HealthStatus]bool{
+			db.HealthOK:      true,
+			db.HealthWarning: true,
+			db.HealthError:   true,
+			db.HealthUnknown: true,
+		}
+		if req.Health.Video != "" {
+			vh := db.HealthStatus(req.Health.Video)
+			if !validHealth[vh] {
+				httpapi.RespondValidationError(c, "invalid health.video: "+req.Health.Video)
+				return
+			}
+		}
+		if req.Health.Audio != "" {
+			ah := db.HealthStatus(req.Health.Audio)
+			if !validHealth[ah] {
+				httpapi.RespondValidationError(c, "invalid health.audio: "+req.Health.Audio)
+				return
+			}
+		}
+	}
+
 	// Update monitor status
 	if err := h.repo.UpdateStatus(c.Request.Context(), monitorID, status); err != nil {
 		if errors.Is(err, db.ErrMonitorNotFound) {
@@ -466,49 +503,14 @@ func (h *Handler) UpdateMonitorStatus(c *gin.Context) {
 
 			// Validate stream_status
 			if req.StreamStatus != "" {
-				ss := db.StreamStatus(req.StreamStatus)
-				validStream := map[db.StreamStatus]bool{
-					db.StreamStatusUnknown:   true,
-					db.StreamStatusScheduled: true,
-					db.StreamStatusLive:      true,
-					db.StreamStatusEnded:     true,
-				}
-				if !validStream[ss] {
-					httpapi.RespondValidationError(c, "invalid stream_status: "+req.StreamStatus)
-					return
-				}
-				stats.StreamStatus = ss
+				stats.StreamStatus = db.StreamStatus(req.StreamStatus)
 			}
-
-			// Validate health fields
 			if req.Health != nil {
 				if req.Health.Video != "" {
-					vh := db.HealthStatus(req.Health.Video)
-					validHealth := map[db.HealthStatus]bool{
-						db.HealthOK:      true,
-						db.HealthWarning: true,
-						db.HealthError:   true,
-						db.HealthUnknown: true,
-					}
-					if !validHealth[vh] {
-						httpapi.RespondValidationError(c, "invalid health.video: "+req.Health.Video)
-						return
-					}
-					stats.VideoHealth = vh
+					stats.VideoHealth = db.HealthStatus(req.Health.Video)
 				}
 				if req.Health.Audio != "" {
-					ah := db.HealthStatus(req.Health.Audio)
-					validHealth := map[db.HealthStatus]bool{
-						db.HealthOK:      true,
-						db.HealthWarning: true,
-						db.HealthError:   true,
-						db.HealthUnknown: true,
-					}
-					if !validHealth[ah] {
-						httpapi.RespondValidationError(c, "invalid health.audio: "+req.Health.Audio)
-						return
-					}
-					stats.AudioHealth = ah
+					stats.AudioHealth = db.HealthStatus(req.Health.Audio)
 				}
 			}
 			if req.Statistics != nil {
