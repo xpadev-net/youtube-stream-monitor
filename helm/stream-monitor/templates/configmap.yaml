@@ -6,11 +6,15 @@ metadata:
     {{- include "stream-monitor.labels" . | nindent 4 }}
 data:
   MAX_MONITORS: {{ .Values.monitoring.maxMonitors | quote }}
+  GATEWAY_RECONCILE_TIMEOUT: {{ .Values.monitoring.reconcileTimeout | quote }}
   RECONCILE_TIMEOUT: {{ .Values.monitoring.reconcileTimeout | quote }}
   WORKER_IMAGE: {{ .Values.worker.image.repository | quote }}
   WORKER_IMAGE_TAG: {{ .Values.worker.image.tag | quote }}
   NAMESPACE: {{ .Release.Namespace | quote }}
   IN_CLUSTER: "true"
+  GATEWAY_SECRETS_NAME: {{ .Values.existingSecrets.apiKeys | default (printf "%s-secrets" (include "stream-monitor.fullname" .)) | quote }}
+  GATEWAY_INTERNAL_API_KEY_SECRET_KEY: {{ .Values.existingSecrets.internalApiKeyKey | default "internal-api-key" | quote }}
+  GATEWAY_WEBHOOK_SIGNING_KEY_SECRET_KEY: {{ .Values.existingSecrets.webhookSigningKeyKey | default "webhook-signing-key" | quote }}
   {{- if .Values.proxy.http }}
   HTTP_PROXY: {{ .Values.proxy.http | quote }}
   {{- end }}

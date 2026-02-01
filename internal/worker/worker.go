@@ -44,17 +44,20 @@ type Worker struct {
 	currentManifestURL  string
 	lastSegmentSequence uint64
 	segmentErrorStart   *time.Time
+	segmentErrorSent    bool
+	lastLiveCheck       time.Time
+	lastSegmentInfo     *manifest.Segment
 
 	// Analysis state
-	blackoutStart       *time.Time
-	silenceStart        *time.Time
-	totalSegments       int
-	blackoutEvents      int
-	silenceEvents       int
-	blackoutAlertSent   bool
-	silenceAlertSent    bool
-	consecutiveBlack    float64
-	consecutiveSilence  float64
+	blackoutStart      *time.Time
+	silenceStart       *time.Time
+	totalSegments      int
+	blackoutEvents     int
+	silenceEvents      int
+	blackoutAlertSent  bool
+	silenceAlertSent   bool
+	consecutiveBlack   float64
+	consecutiveSilence float64
 
 	// Metadata for webhooks
 	metadata json.RawMessage
@@ -65,7 +68,7 @@ func NewWorker(cfg *config.WorkerConfig) *Worker {
 	return &Worker{
 		cfg:            cfg,
 		ytdlpClient:    ytdlp.NewClient(cfg.YtDlpPath, cfg.StreamlinkPath, cfg.HTTPProxy, cfg.HTTPSProxy),
-		manifestParser: manifest.NewParser(cfg.ManifestFetchTimeout),
+		manifestParser: manifest.NewParserWithLimit(cfg.ManifestFetchTimeout, cfg.SegmentMaxBytes),
 		analyzer:       ffmpeg.NewAnalyzer(cfg.FFmpegPath, cfg.FFprobePath, "/tmp/segments", cfg.SilenceDBThreshold),
 		webhookSender:  webhook.NewSender(cfg.WebhookSigningKey),
 		callbackClient: NewCallbackClient(cfg.CallbackURL, cfg.InternalAPIKey),
@@ -123,7 +126,8 @@ func (w *Worker) waitingMode(ctx context.Context) error {
 	log.Info("entering waiting mode")
 	w.reportStatus(ctx, db.StatusWaiting, nil)
 
-	ticker := time.NewTicker(w.cfg.WaitingModeInterval)
+	interval := w.cfg.WaitingModeInitialInterval
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// Check if delayed alert should be sent
@@ -161,6 +165,13 @@ func (w *Worker) waitingMode(ctx context.Context) error {
 			}
 
 			// Check for scheduled start delay
+			if w.cfg.ScheduledStartTime != nil && time.Now().After(*w.cfg.ScheduledStartTime) {
+				if interval != w.cfg.WaitingModeDelayedInterval {
+					ticker.Stop()
+					interval = w.cfg.WaitingModeDelayedInterval
+					ticker = time.NewTicker(interval)
+				}
+			}
 			if w.cfg.ScheduledStartTime != nil && !delayAlertSent {
 				threshold := w.cfg.ScheduledStartTime.Add(w.cfg.DelayThreshold)
 				if time.Now().After(threshold) {
@@ -192,8 +203,12 @@ func (w *Worker) waitingMode(ctx context.Context) error {
 				}
 			}
 
+			liveStatus := "unknown"
+			if info != nil {
+				liveStatus = info.LiveStatus
+			}
 			log.Debug("stream not yet live, continuing to wait",
-				zap.String("live_status", info.LiveStatus),
+				zap.String("live_status", liveStatus),
 			)
 		}
 	}
@@ -215,9 +230,6 @@ func (w *Worker) monitoringMode(ctx context.Context) error {
 
 	log.Info("got manifest URL", zap.String("url", manifestURL))
 
-	ticker := time.NewTicker(w.cfg.AnalysisInterval)
-	defer ticker.Stop()
-
 	manifestRefreshTicker := time.NewTicker(30 * time.Second)
 	defer manifestRefreshTicker.Stop()
 
@@ -225,28 +237,49 @@ func (w *Worker) monitoringMode(ctx context.Context) error {
 		if w.getState() == StateError {
 			return fmt.Errorf("worker in error state")
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-manifestRefreshTicker.C:
-			// Refresh manifest URL periodically
-			newURL, err := w.ytdlpClient.GetManifestURL(ctx, w.cfg.StreamURL)
-			if err != nil {
-				log.Warn("failed to refresh manifest URL", zap.Error(err))
-			} else {
-				w.mu.Lock()
-				w.currentManifestURL = newURL
-				w.mu.Unlock()
-			}
-		case <-ticker.C:
-			if err := w.analyzeLatestSegment(ctx); err != nil {
-				log.Warn("segment analysis failed", zap.Error(err))
-				if w.handleSegmentError(ctx, err) {
-					w.reportStatus(ctx, db.StatusCompleted, nil)
-					return nil
+		start := time.Now()
+		if err := w.checkLiveStatus(ctx); err != nil {
+			return err
+		}
+		if w.getState() == StateCompleted {
+			return nil
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-manifestRefreshTicker.C:
+				newURL, err := w.ytdlpClient.GetManifestURL(ctx, w.cfg.StreamURL)
+				if err != nil {
+					log.Warn("failed to refresh manifest URL", zap.Error(err))
+				} else {
+					w.mu.Lock()
+					w.currentManifestURL = newURL
+					w.mu.Unlock()
 				}
-			} else {
-				w.clearSegmentError()
+			default:
+				goto Analyze
+			}
+		}
+	Analyze:
+		if err := w.analyzeLatestSegment(ctx); err != nil {
+			log.Warn("segment analysis failed", zap.Error(err))
+			if w.handleSegmentError(ctx, err) {
+				w.reportStatus(ctx, db.StatusCompleted, nil)
+				return nil
+			}
+		} else {
+			w.clearSegmentError()
+		}
+
+		elapsed := time.Since(start)
+		if remaining := w.cfg.AnalysisInterval - elapsed; remaining > 0 {
+			timer := time.NewTimer(remaining)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
 			}
 		}
 	}
@@ -259,10 +292,23 @@ func (w *Worker) analyzeLatestSegment(ctx context.Context) error {
 	w.mu.Unlock()
 
 	// Get latest segment info
+	isEndList, err := w.manifestParser.IsEndList(ctx, manifestURL)
+	if err != nil {
+		return fmt.Errorf("check endlist: %w", err)
+	}
+	if isEndList {
+		w.sendWebhook(ctx, webhook.EventStreamEnded, nil)
+		w.setState(StateCompleted)
+		return nil
+	}
+
 	segment, err := w.manifestParser.GetLatestSegment(ctx, manifestURL)
 	if err != nil {
 		return fmt.Errorf("get latest segment: %w", err)
 	}
+	w.mu.Lock()
+	w.lastSegmentInfo = segment
+	w.mu.Unlock()
 
 	// Skip if we already processed this segment
 	if segment.Sequence <= w.lastSegmentSequence {
@@ -311,59 +357,70 @@ func (w *Worker) analyzeLatestSegment(ctx context.Context) error {
 
 // processBlackDetection handles blackout detection results.
 func (w *Worker) processBlackDetection(ctx context.Context, result *ffmpeg.BlackDetectResult, segmentDuration float64) {
+	var (
+		sendEvent bool
+		eventType webhook.EventType
+		data      map[string]interface{}
+	)
+
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	if result.FullyBlack {
-		// Accumulate consecutive black duration
 		w.consecutiveBlack += segmentDuration
-
 		if w.blackoutStart == nil {
 			now := time.Now()
 			w.blackoutStart = &now
 		}
-
-		// Check threshold (only once per blackout event)
 		if !w.blackoutAlertSent && w.consecutiveBlack >= w.cfg.BlackoutThreshold.Seconds() {
 			w.blackoutEvents++
 			w.blackoutAlertSent = true
 			startTime := *w.blackoutStart
 			duration := w.consecutiveBlack
 			thresholdSec := int(w.cfg.BlackoutThreshold.Seconds())
-			w.mu.Unlock()
-			w.sendWebhook(ctx, webhook.EventAlertBlackout, map[string]interface{}{
+			segmentInfo := w.segmentInfoPayload()
+			sendEvent = true
+			eventType = webhook.EventAlertBlackout
+			data = map[string]interface{}{
 				"duration_sec":  duration,
 				"started_at":    startTime.Format(time.RFC3339),
 				"threshold_sec": thresholdSec,
-			})
-			w.mu.Lock()
+			}
+			if segmentInfo != nil {
+				data["segment_info"] = segmentInfo
+			}
 		}
 	} else {
-		// Recovered from blackout
 		if w.blackoutAlertSent && w.blackoutStart != nil {
 			startTime := *w.blackoutStart
 			totalDuration := w.consecutiveBlack
 			w.blackoutAlertSent = false
-			w.mu.Unlock()
-			w.sendWebhook(ctx, webhook.EventAlertBlackoutRecovered, map[string]interface{}{
+			sendEvent = true
+			eventType = webhook.EventAlertBlackoutRecovered
+			data = map[string]interface{}{
 				"total_duration_sec": totalDuration,
 				"started_at":         startTime.Format(time.RFC3339),
 				"recovered_at":       time.Now().Format(time.RFC3339),
-			})
-			w.mu.Lock()
+			}
 		}
 		w.consecutiveBlack = 0
 		w.blackoutStart = nil
+	}
+	w.mu.Unlock()
+
+	if sendEvent {
+		w.sendWebhook(ctx, eventType, data)
 	}
 }
 
 // processSilenceDetection handles silence detection results.
 func (w *Worker) processSilenceDetection(ctx context.Context, result *ffmpeg.SilenceDetectResult, segmentDuration float64) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	var (
+		sendEvent bool
+		eventType webhook.EventType
+		data      map[string]interface{}
+	)
 
+	w.mu.Lock()
 	if result.FullySilent {
-		// Accumulate consecutive silence duration
 		w.consecutiveSilence += segmentDuration
 
 		if w.silenceStart == nil {
@@ -371,44 +428,50 @@ func (w *Worker) processSilenceDetection(ctx context.Context, result *ffmpeg.Sil
 			w.silenceStart = &now
 		}
 
-		// Check threshold (only once per silence event)
 		if !w.silenceAlertSent && w.consecutiveSilence >= w.cfg.SilenceThreshold.Seconds() {
 			w.silenceEvents++
 			w.silenceAlertSent = true
 			startTime := *w.silenceStart
 			duration := w.consecutiveSilence
 			thresholdSec := int(w.cfg.SilenceThreshold.Seconds())
-			w.mu.Unlock()
-			w.sendWebhook(ctx, webhook.EventAlertSilence, map[string]interface{}{
+			segmentInfo := w.segmentInfoPayload()
+			sendEvent = true
+			eventType = webhook.EventAlertSilence
+			data = map[string]interface{}{
 				"duration_sec":  duration,
 				"started_at":    startTime.Format(time.RFC3339),
 				"threshold_sec": thresholdSec,
-			})
-			w.mu.Lock()
+			}
+			if segmentInfo != nil {
+				data["segment_info"] = segmentInfo
+			}
 		}
 	} else {
-		// Recovered from silence
 		if w.silenceAlertSent && w.silenceStart != nil {
 			startTime := *w.silenceStart
 			totalDuration := w.consecutiveSilence
 			w.silenceAlertSent = false
-			w.mu.Unlock()
-			w.sendWebhook(ctx, webhook.EventAlertSilenceRecovered, map[string]interface{}{
+			sendEvent = true
+			eventType = webhook.EventAlertSilenceRecovered
+			data = map[string]interface{}{
 				"total_duration_sec": totalDuration,
 				"started_at":         startTime.Format(time.RFC3339),
 				"recovered_at":       time.Now().Format(time.RFC3339),
-			})
-			w.mu.Lock()
+			}
 		}
 		w.consecutiveSilence = 0
 		w.silenceStart = nil
+	}
+	w.mu.Unlock()
+
+	if sendEvent {
+		w.sendWebhook(ctx, eventType, data)
 	}
 }
 
 // handleSegmentError handles segment fetch/analysis errors.
 func (w *Worker) handleSegmentError(ctx context.Context, err error) bool {
 	w.mu.Lock()
-
 	if w.state == StateCompleted {
 		w.mu.Unlock()
 		return true
@@ -417,27 +480,24 @@ func (w *Worker) handleSegmentError(ctx context.Context, err error) bool {
 	if w.segmentErrorStart == nil {
 		now := time.Now()
 		w.segmentErrorStart = &now
+		w.segmentErrorSent = false
 	}
 
-	// Check if error has persisted for 60 seconds
-	if time.Since(*w.segmentErrorStart) >= 60*time.Second {
+	if time.Since(*w.segmentErrorStart) >= 60*time.Second && !w.segmentErrorSent {
+		w.segmentErrorSent = true
 		w.mu.Unlock()
 
-		// Check if stream is still live
 		isLive, _, checkErr := w.ytdlpClient.IsStreamLive(ctx, w.cfg.StreamURL)
 		if checkErr != nil {
 			log.Warn("failed to check stream status during segment error", zap.Error(checkErr))
 			return false
 		}
-
 		if !isLive {
-			// Stream ended
 			w.sendWebhook(ctx, webhook.EventStreamEnded, nil)
 			w.setState(StateCompleted)
 			return true
 		}
 
-		// Send segment error alert
 		w.sendWebhook(ctx, webhook.EventAlertSegmentError, map[string]interface{}{
 			"error":        err.Error(),
 			"duration_sec": 60,
@@ -453,11 +513,15 @@ func (w *Worker) handleSegmentError(ctx context.Context, err error) bool {
 func (w *Worker) clearSegmentError() {
 	w.mu.Lock()
 	w.segmentErrorStart = nil
+	w.segmentErrorSent = false
 	w.mu.Unlock()
 }
 
 // sendWebhook sends a webhook notification.
 func (w *Worker) sendWebhook(ctx context.Context, eventType webhook.EventType, data map[string]interface{}) {
+	if data == nil {
+		data = map[string]interface{}{}
+	}
 	payload := &webhook.Payload{
 		EventType: eventType,
 		MonitorID: w.cfg.MonitorID,
@@ -479,6 +543,42 @@ func (w *Worker) sendWebhook(ctx context.Context, eventType webhook.EventType, d
 		// (don't send monitor.error event)
 		w.setState(StateError)
 	}
+}
+
+func (w *Worker) shouldCheckLive() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if time.Since(w.lastLiveCheck) < 5*time.Minute {
+		return false
+	}
+	w.lastLiveCheck = time.Now()
+	return true
+}
+
+func (w *Worker) segmentInfoPayload() map[string]interface{} {
+	if w.lastSegmentInfo == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"sequence": w.lastSegmentInfo.Sequence,
+		"duration": w.lastSegmentInfo.Duration,
+	}
+}
+
+func (w *Worker) checkLiveStatus(ctx context.Context) error {
+	if !w.shouldCheckLive() {
+		return nil
+	}
+	isLive, _, err := w.ytdlpClient.IsStreamLive(ctx, w.cfg.StreamURL)
+	if err != nil {
+		log.Warn("failed to check stream status", zap.Error(err))
+		return nil
+	}
+	if !isLive {
+		w.sendWebhook(ctx, webhook.EventStreamEnded, nil)
+		w.setState(StateCompleted)
+	}
+	return nil
 }
 
 // reportStatus reports the current status to the gateway.

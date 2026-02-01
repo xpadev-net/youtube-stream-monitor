@@ -74,7 +74,16 @@ func main() {
 	reconciler := k8s.NewReconciler(k8sClient, repo, webhookSender, cfg.ReconcileTimeout)
 
 	// Create API handler
-	handler := api.NewHandler(repo, cfg.MaxMonitors, reconciler, cfg.InternalAPIKey, cfg.WebhookSigningKey)
+	handler := api.NewHandler(
+		repo,
+		cfg.MaxMonitors,
+		reconciler,
+		cfg.InternalAPIKey,
+		cfg.WebhookSigningKey,
+		cfg.GatewaySecretsName,
+		cfg.GatewayInternalAPIKeySecretKey,
+		cfg.GatewayWebhookSigningKeySecretKey,
+	)
 
 	// Run reconciliation on boot if enabled
 	if cfg.ReconcileOnBoot {
@@ -110,9 +119,9 @@ func main() {
 	v1 := router.Group("/api/v1")
 	v1.Use(httpapi.APIKeyAuth(cfg.APIKey))
 	{
-		v1.POST("/monitors", handler.CreateMonitor)
-		v1.GET("/monitors", handler.ListMonitors)
-		v1.GET("/monitors/:monitor_id", handler.GetMonitor)
+		v1.POST("/monitors", httpapi.RateLimit(10, time.Minute), handler.CreateMonitor)
+		v1.GET("/monitors", httpapi.RateLimit(100, time.Minute), handler.ListMonitors)
+		v1.GET("/monitors/:monitor_id", httpapi.RateLimit(100, time.Minute), handler.GetMonitor)
 		v1.DELETE("/monitors/:monitor_id", handler.DeleteMonitor)
 	}
 

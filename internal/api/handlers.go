@@ -18,27 +18,34 @@ import (
 	"github.com/xpadev-net/youtube-stream-tracker/internal/ids"
 	"github.com/xpadev-net/youtube-stream-tracker/internal/k8s"
 	"github.com/xpadev-net/youtube-stream-tracker/internal/log"
+	"github.com/xpadev-net/youtube-stream-tracker/internal/validation"
 )
 
 var youtubeWatchURLRegex = regexp.MustCompile(`^https?://(www\.)?youtube\.com/watch\?v=[a-zA-Z0-9_-]{11}`)
 
 // Handler holds dependencies for API handlers.
 type Handler struct {
-	repo               *db.MonitorRepository
-	maxMonitors        int
-	reconciler         *k8s.Reconciler
-	internalAPIKey     string
-	webhookSigningKey  string
+	repo                       *db.MonitorRepository
+	maxMonitors                int
+	reconciler                 *k8s.Reconciler
+	internalAPIKey             string
+	webhookSigningKey          string
+	secretsName                string
+	internalAPIKeySecretKey    string
+	webhookSigningKeySecretKey string
 }
 
 // NewHandler creates a new API handler.
-func NewHandler(repo *db.MonitorRepository, maxMonitors int, reconciler *k8s.Reconciler, internalAPIKey, webhookSigningKey string) *Handler {
+func NewHandler(repo *db.MonitorRepository, maxMonitors int, reconciler *k8s.Reconciler, internalAPIKey, webhookSigningKey, secretsName, internalAPIKeySecretKey, webhookSigningKeySecretKey string) *Handler {
 	return &Handler{
-		repo:              repo,
-		maxMonitors:       maxMonitors,
-		reconciler:        reconciler,
-		internalAPIKey:    internalAPIKey,
-		webhookSigningKey: webhookSigningKey,
+		repo:                       repo,
+		maxMonitors:                maxMonitors,
+		reconciler:                 reconciler,
+		internalAPIKey:             internalAPIKey,
+		webhookSigningKey:          webhookSigningKey,
+		secretsName:                secretsName,
+		internalAPIKeySecretKey:    internalAPIKeySecretKey,
+		webhookSigningKeySecretKey: webhookSigningKeySecretKey,
 	}
 }
 
@@ -84,6 +91,10 @@ func (h *Handler) CreateMonitor(c *gin.Context) {
 
 	// Validate callback URL
 	if _, err := url.ParseRequestURI(req.CallbackURL); err != nil {
+		httpapi.RespondValidationError(c, "Invalid callback URL")
+		return
+	}
+	if err := validation.ValidateOutboundURL(c.Request.Context(), req.CallbackURL, false); err != nil {
 		httpapi.RespondValidationError(c, "Invalid callback URL")
 		return
 	}
@@ -162,7 +173,7 @@ func (h *Handler) CreateMonitor(c *gin.Context) {
 		return
 	}
 
-	if err := h.reconciler.CreateMonitorPod(c.Request.Context(), monitor, h.internalAPIKey, h.webhookSigningKey); err != nil {
+	if err := h.reconciler.CreateMonitorPod(c.Request.Context(), monitor, h.internalAPIKey, h.webhookSigningKey, h.secretsName, h.internalAPIKeySecretKey, h.webhookSigningKeySecretKey); err != nil {
 		log.Error("failed to create worker pod", zap.Error(err))
 		_ = h.repo.UpdateStatus(c.Request.Context(), monitor.ID, db.StatusError)
 		httpapi.RespondInternalError(c, "Failed to start worker pod")
@@ -178,13 +189,13 @@ func (h *Handler) CreateMonitor(c *gin.Context) {
 
 // GetMonitorResponse represents the response for getting a monitor.
 type GetMonitorResponse struct {
-	MonitorID    string            `json:"monitor_id"`
-	StreamURL    string            `json:"stream_url"`
-	Status       string            `json:"status"`
-	StreamStatus string            `json:"stream_status,omitempty"`
-	Health       *HealthResponse   `json:"health,omitempty"`
-	Statistics   *StatsResponse    `json:"statistics,omitempty"`
-	CreatedAt    string            `json:"created_at"`
+	MonitorID    string          `json:"monitor_id"`
+	StreamURL    string          `json:"stream_url"`
+	Status       string          `json:"status"`
+	StreamStatus string          `json:"stream_status,omitempty"`
+	Health       *HealthResponse `json:"health,omitempty"`
+	Statistics   *StatsResponse  `json:"statistics,omitempty"`
+	CreatedAt    string          `json:"created_at"`
 }
 
 // HealthResponse represents health status in the response.
@@ -330,6 +341,18 @@ func (h *Handler) ListMonitors(c *gin.Context) {
 
 	if status := c.Query("status"); status != "" {
 		s := db.MonitorStatus(status)
+		validStatuses := map[db.MonitorStatus]bool{
+			db.StatusInitializing: true,
+			db.StatusWaiting:      true,
+			db.StatusMonitoring:   true,
+			db.StatusCompleted:    true,
+			db.StatusStopped:      true,
+			db.StatusError:        true,
+		}
+		if !validStatuses[s] {
+			httpapi.RespondValidationError(c, "Invalid status value")
+			return
+		}
 		params.Status = &s
 	}
 
@@ -379,15 +402,16 @@ func (h *Handler) ListMonitors(c *gin.Context) {
 
 // UpdateStatusRequest represents the request body for updating monitor status (internal API).
 type UpdateStatusRequest struct {
-	Status       string  `json:"status" binding:"required"`
-	StreamStatus *string `json:"stream_status,omitempty"`
-	VideoHealth  *string `json:"video_health,omitempty"`
-	AudioHealth  *string `json:"audio_health,omitempty"`
-	Stats        *struct {
-		TotalSegments  *int `json:"total_segments,omitempty"`
-		BlackoutEvents *int `json:"blackout_events,omitempty"`
-		SilenceEvents  *int `json:"silence_events,omitempty"`
-	} `json:"stats,omitempty"`
+	Status string `json:"status" binding:"required"`
+	Health *struct {
+		Video string `json:"video"`
+		Audio string `json:"audio"`
+	} `json:"health,omitempty"`
+	Statistics *struct {
+		TotalSegmentsAnalyzed *int `json:"total_segments_analyzed,omitempty"`
+		BlackoutEvents        *int `json:"blackout_events,omitempty"`
+		SilenceEvents         *int `json:"silence_events,omitempty"`
+	} `json:"statistics,omitempty"`
 }
 
 // UpdateMonitorStatus handles PUT /internal/v1/monitors/:monitor_id/status
@@ -431,7 +455,7 @@ func (h *Handler) UpdateMonitorStatus(c *gin.Context) {
 	}
 
 	// Update stats if provided
-	if req.StreamStatus != nil || req.VideoHealth != nil || req.AudioHealth != nil || req.Stats != nil {
+	if req.Health != nil || req.Statistics != nil {
 		stats, err := h.repo.GetStats(c.Request.Context(), monitorID)
 		if err != nil {
 			log.Error("failed to get monitor stats", zap.Error(err))
@@ -439,24 +463,23 @@ func (h *Handler) UpdateMonitorStatus(c *gin.Context) {
 			now := time.Now()
 			stats.LastCheckAt = &now
 
-			if req.StreamStatus != nil {
-				stats.StreamStatus = db.StreamStatus(*req.StreamStatus)
-			}
-			if req.VideoHealth != nil {
-				stats.VideoHealth = db.HealthStatus(*req.VideoHealth)
-			}
-			if req.AudioHealth != nil {
-				stats.AudioHealth = db.HealthStatus(*req.AudioHealth)
-			}
-			if req.Stats != nil {
-				if req.Stats.TotalSegments != nil {
-					stats.TotalSegments = *req.Stats.TotalSegments
+			if req.Health != nil {
+				if req.Health.Video != "" {
+					stats.VideoHealth = db.HealthStatus(req.Health.Video)
 				}
-				if req.Stats.BlackoutEvents != nil {
-					stats.BlackoutEvents = *req.Stats.BlackoutEvents
+				if req.Health.Audio != "" {
+					stats.AudioHealth = db.HealthStatus(req.Health.Audio)
 				}
-				if req.Stats.SilenceEvents != nil {
-					stats.SilenceEvents = *req.Stats.SilenceEvents
+			}
+			if req.Statistics != nil {
+				if req.Statistics.TotalSegmentsAnalyzed != nil {
+					stats.TotalSegments = *req.Statistics.TotalSegmentsAnalyzed
+				}
+				if req.Statistics.BlackoutEvents != nil {
+					stats.BlackoutEvents = *req.Statistics.BlackoutEvents
+				}
+				if req.Statistics.SilenceEvents != nil {
+					stats.SilenceEvents = *req.Statistics.SilenceEvents
 				}
 			}
 

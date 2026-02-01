@@ -16,9 +16,11 @@ const (
 	ErrCodeForbidden        ErrorCode = "FORBIDDEN"
 	ErrCodeNotFound         ErrorCode = "NOT_FOUND"
 	ErrCodeDuplicateMonitor ErrorCode = "DUPLICATE_MONITOR"
-	ErrCodeMaxMonitors      ErrorCode = "MAX_MONITORS_REACHED"
+	ErrCodeMaxMonitors      ErrorCode = "MAX_MONITORS_EXCEEDED"
 	ErrCodeValidation       ErrorCode = "VALIDATION_ERROR"
 	ErrCodeInvalidURL       ErrorCode = "INVALID_URL"
+	ErrCodeInvalidConfig    ErrorCode = "INVALID_CONFIG"
+	ErrCodeRateLimitExceeded ErrorCode = "RATE_LIMIT_EXCEEDED"
 
 	// Server errors
 	ErrCodeInternal   ErrorCode = "INTERNAL_ERROR"

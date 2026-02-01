@@ -15,21 +15,22 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/xpadev-net/youtube-stream-tracker/internal/log"
+	"github.com/xpadev-net/youtube-stream-tracker/internal/validation"
 )
 
 // EventType represents the type of webhook event.
 type EventType string
 
 const (
-	EventStreamStarted         EventType = "stream.started"
-	EventStreamEnded           EventType = "stream.ended"
-	EventStreamDelayed         EventType = "stream.delayed"
-	EventAlertBlackout         EventType = "alert.blackout"
+	EventStreamStarted          EventType = "stream.started"
+	EventStreamEnded            EventType = "stream.ended"
+	EventStreamDelayed          EventType = "stream.delayed"
+	EventAlertBlackout          EventType = "alert.blackout"
 	EventAlertBlackoutRecovered EventType = "alert.blackout_recovered"
-	EventAlertSilence          EventType = "alert.silence"
-	EventAlertSilenceRecovered EventType = "alert.silence_recovered"
-	EventAlertSegmentError     EventType = "alert.segment_error"
-	EventMonitorError          EventType = "monitor.error"
+	EventAlertSilence           EventType = "alert.silence"
+	EventAlertSilenceRecovered  EventType = "alert.silence_recovered"
+	EventAlertSegmentError      EventType = "alert.segment_error"
+	EventMonitorError           EventType = "monitor.error"
 )
 
 // Payload represents a webhook payload.
@@ -38,7 +39,7 @@ type Payload struct {
 	MonitorID string                 `json:"monitor_id"`
 	StreamURL string                 `json:"stream_url"`
 	Timestamp time.Time              `json:"timestamp"`
-	Data      map[string]interface{} `json:"data,omitempty"`
+	Data      map[string]interface{} `json:"data"`
 	Metadata  json.RawMessage        `json:"metadata,omitempty"`
 }
 
@@ -72,6 +73,10 @@ type SendResult struct {
 func (s *Sender) Send(ctx context.Context, webhookURL string, payload *Payload) *SendResult {
 	result := &SendResult{}
 
+	if err := validation.ValidateOutboundURL(ctx, webhookURL, false); err != nil {
+		result.Error = fmt.Sprintf("invalid webhook url: %v", err)
+		return result
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		result.Error = fmt.Sprintf("marshal payload: %v", err)

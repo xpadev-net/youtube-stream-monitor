@@ -50,6 +50,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.postgresql.existingSecret | default (printf "%s-postgresql" (include "stream-monitor.fullname" .)) }}
                   key: {{ .Values.postgresql.existingSecretKey | default "password" }}
+            - name: DB_DSN
+              value: {{ include "stream-monitor.databaseURL" . | quote }}
             - name: DATABASE_URL
               value: {{ include "stream-monitor.databaseURL" . | quote }}
             - name: API_KEY

@@ -65,7 +65,7 @@ func TestIsValidYouTubeWatchURL(t *testing.T) {
 
 func TestNewHandler(t *testing.T) {
 	repo := &db.MonitorRepository{}
-	handler := NewHandler(repo, 50, nil, "internal-key", "signing-key")
+	handler := NewHandler(repo, 50, nil, "internal-key", "signing-key", "stream-monitor-secrets", "internal-api-key", "webhook-signing-key")
 
 	if handler.repo != repo {
 		t.Error("NewHandler() repo not set correctly")
@@ -262,7 +262,7 @@ func TestHandlerStructure(t *testing.T) {
 	router := setupTestRouter()
 	repo := &db.MonitorRepository{}
 
-	handler := NewHandler(repo, 50, nil, "test-key", "test-signing-key")
+	handler := NewHandler(repo, 50, nil, "test-key", "test-signing-key", "stream-monitor-secrets", "internal-api-key", "webhook-signing-key")
 
 	// Test that handler can be used in a route
 	router.GET("/test", func(c *gin.Context) {

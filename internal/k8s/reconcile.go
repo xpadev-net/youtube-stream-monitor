@@ -15,13 +15,13 @@ import (
 
 // ReconcileResult contains the result of a reconciliation.
 type ReconcileResult struct {
-	MissingPods   int
-	ZombiePods    int
-	OrphanedPods  int
-	Errors        []string
-	StartTime     time.Time
-	EndTime       time.Time
-	TimedOut      bool
+	MissingPods  int
+	ZombiePods   int
+	OrphanedPods int
+	Errors       []string
+	StartTime    time.Time
+	EndTime      time.Time
+	TimedOut     bool
 }
 
 // Reconciler handles reconciliation between DB and K8s state.
@@ -122,7 +122,7 @@ func (r *Reconciler) ReconcileStartup(ctx context.Context) (*ReconcileResult, er
 
 			if updated {
 				// Send monitor.error webhook
-				r.sendErrorWebhook(reconcileCtx, monitor, "missing_pod", "Pod not found during reconciliation")
+				r.sendErrorWebhook(reconcileCtx, monitor, "reconciliation_mismatch", "Pod not found during reconciliation")
 			}
 		}
 	}
@@ -191,8 +191,14 @@ func (r *Reconciler) sendErrorWebhook(ctx context.Context, monitor *db.Monitor, 
 		StreamURL: monitor.StreamURL,
 		Timestamp: time.Now(),
 		Data: map[string]interface{}{
-			"reason":  reason,
-			"message": message,
+			"reason":                reason,
+			"reconciliation_action": "mark_as_error_missing_pod",
+			"previous_status":       string(monitor.Status),
+			"observed_state": map[string]interface{}{
+				"pod_exists": false,
+				"db_status":  string(monitor.Status),
+			},
+			"error_details": message,
 		},
 		Metadata: monitor.Metadata,
 	}
@@ -213,21 +219,24 @@ func (r *Reconciler) sendErrorWebhook(ctx context.Context, monitor *db.Monitor, 
 }
 
 // CreateMonitorPod creates a pod for a monitor and updates the pod_name in DB.
-func (r *Reconciler) CreateMonitorPod(ctx context.Context, monitor *db.Monitor, internalAPIKey, webhookSigningKey string) error {
+func (r *Reconciler) CreateMonitorPod(ctx context.Context, monitor *db.Monitor, internalAPIKey, webhookSigningKey, secretsName, internalKey, signingKey string) error {
 	gatewayBaseURL, err := r.k8sClient.GetGatewayInternalBaseURL(ctx)
 	if err != nil {
 		return fmt.Errorf("get gateway internal base URL: %w", err)
 	}
 
 	params := CreatePodParams{
-		MonitorID:         monitor.ID,
-		StreamURL:         monitor.StreamURL,
-		CallbackURL:       gatewayBaseURL,
-		InternalAPIKey:    internalAPIKey,
-		WebhookURL:        monitor.CallbackURL,
-		WebhookSigningKey: webhookSigningKey,
-		Config:            &monitor.Config,
-		Metadata:          monitor.Metadata,
+		MonitorID:             monitor.ID,
+		StreamURL:             monitor.StreamURL,
+		CallbackURL:           gatewayBaseURL,
+		InternalAPIKey:        internalAPIKey,
+		WebhookURL:            monitor.CallbackURL,
+		WebhookSigningKey:     webhookSigningKey,
+		Config:                &monitor.Config,
+		Metadata:              monitor.Metadata,
+		SecretsName:           secretsName,
+		InternalAPIKeyName:    internalKey,
+		WebhookSigningKeyName: signingKey,
 	}
 
 	// Deserialize config from monitor if needed
