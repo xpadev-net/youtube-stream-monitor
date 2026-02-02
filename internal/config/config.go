@@ -133,7 +133,7 @@ func LoadGatewayConfig() (*GatewayConfig, error) {
 
 // LoadWorkerConfig loads the worker configuration from environment variables.
 func LoadWorkerConfig() (*WorkerConfig, error) {
-	segmentMaxBytes := int64(getEnvInt("SEGMENT_MAX_BYTES", 10*1024*1024))
+	segmentMaxBytes := getEnvInt64("SEGMENT_MAX_BYTES", 10*1024*1024)
 	cfg := &WorkerConfig{
 		MonitorID:                  getEnv("MONITOR_ID", ""),
 		StreamURL:                  getEnv("STREAM_URL", ""),
@@ -235,6 +235,15 @@ func getEnvWithFallback(primaryKey, fallbackKey, defaultValue string) string {
 func getEnvInt(key string, defaultValue int) int {
 	if v := os.Getenv(key); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
+	}
+	return defaultValue
+}
+
+func getEnvInt64(key string, defaultValue int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return i
 		}
 	}

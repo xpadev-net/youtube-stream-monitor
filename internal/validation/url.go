@@ -56,6 +56,11 @@ func ValidateOutboundURL(ctx context.Context, rawURL string, allowPrivate bool) 
 // NewSafeHTTPClient returns an http.Client whose Transport resolves hostnames at
 // dial time and enforces isPrivateIP checks to mitigate DNS rebinding/TOCTOU.
 func NewSafeHTTPClient(timeout time.Duration) *http.Client {
+	return NewSafeHTTPClientWithPrivate(timeout, false)
+}
+
+// NewSafeHTTPClientWithPrivate allows optionally permitting private IPs for trusted endpoints.
+func NewSafeHTTPClientWithPrivate(timeout time.Duration, allowPrivate bool) *http.Client {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -69,7 +74,7 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 			}
 			for _, ipAddr := range ips {
 				ip := ipAddr.IP
-				if isPrivateIP(ip) {
+				if !allowPrivate && isPrivateIP(ip) {
 					continue
 				}
 				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
@@ -79,7 +84,7 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 			}
 			return nil, fmt.Errorf("no allowed ip to dial for host %s", host)
 		},
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: false},
 	}
 	return &http.Client{Transport: transport, Timeout: timeout}
 }

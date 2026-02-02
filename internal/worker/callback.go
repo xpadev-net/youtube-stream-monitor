@@ -24,8 +24,8 @@ func NewCallbackClient(baseURL, internalAPIKey string) *CallbackClient {
 	return &CallbackClient{
 		baseURL:        baseURL,
 		internalAPIKey: internalAPIKey,
-		// Use safe HTTP client to enforce IP checks at dial time for internal callbacks
-		httpClient: validation.NewSafeHTTPClient(10 * time.Second),
+		// Allow private IPs for in-cluster gateway service resolution.
+		httpClient: validation.NewSafeHTTPClientWithPrivate(10*time.Second, true),
 	}
 }
 

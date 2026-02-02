@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -95,7 +96,7 @@ func (h *Handler) CreateMonitor(c *gin.Context) {
 		return
 	}
 	if err := validation.ValidateOutboundURL(c.Request.Context(), req.CallbackURL, false); err != nil {
-		httpapi.RespondValidationError(c, "Invalid callback URL")
+		httpapi.RespondValidationError(c, fmt.Sprintf("Invalid callback URL: %s", err.Error()))
 		return
 	}
 
