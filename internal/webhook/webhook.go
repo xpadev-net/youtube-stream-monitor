@@ -52,12 +52,21 @@ type Sender struct {
 
 // NewSender creates a new webhook sender.
 func NewSender(signingKey string) *Sender {
+	client := validation.NewSafeHTTPClient(10 * time.Second)
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		// Cap redirects more strictly than the Go default (10) for defense in depth.
+		if len(via) >= 5 {
+			return fmt.Errorf("too many redirects")
+		}
+		if err := validation.ValidateOutboundURL(req.Context(), req.URL.String(), false); err != nil {
+			return fmt.Errorf("redirect url not allowed: %w", err)
+		}
+		return nil
+	}
 	return &Sender{
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		httpClient: client,
 		signingKey: signingKey,
-		maxRetries: 3,
+		maxRetries: 4, // total attempts (initial + 3 retries)
 	}
 }
 
@@ -83,19 +92,16 @@ func (s *Sender) Send(ctx context.Context, webhookURL string, payload *Payload) 
 		return result
 	}
 
-	// Retry with exponential backoff (1s, 2s, 4s)
-	delays := []time.Duration{0, 1 * time.Second, 2 * time.Second, 4 * time.Second}
-
 	for attempt := 1; attempt <= s.maxRetries; attempt++ {
 		result.Attempts = attempt
 
 		// Wait before retry (skip first attempt)
-		if attempt > 1 {
+		if delay := retryDelay(attempt); delay > 0 {
 			select {
 			case <-ctx.Done():
 				result.Error = "context canceled"
 				return result
-			case <-time.After(delays[attempt]):
+			case <-time.After(delay):
 			}
 		}
 
@@ -137,6 +143,21 @@ func (s *Sender) Send(ctx context.Context, webhookURL string, payload *Payload) 
 	)
 
 	return result
+}
+
+func retryDelay(attempt int) time.Duration {
+	if attempt <= 1 {
+		return 0
+	}
+	shift := attempt - 2
+	if shift < 0 {
+		return 0
+	}
+	delay := time.Second * time.Duration(1<<shift)
+	if delay > 10*time.Second {
+		return 10 * time.Second
+	}
+	return delay
 }
 
 // sendOnce sends a single webhook request.

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -95,12 +96,31 @@ func TestNewSender(t *testing.T) {
 		t.Errorf("NewSender().signingKey = %v, want test-key", sender.signingKey)
 	}
 
-	if sender.maxRetries != 3 {
-		t.Errorf("NewSender().maxRetries = %v, want 3", sender.maxRetries)
+	if sender.maxRetries != 4 {
+		t.Errorf("NewSender().maxRetries = %v, want 4", sender.maxRetries)
 	}
 
 	if sender.httpClient.Timeout != 10*time.Second {
 		t.Errorf("NewSender().httpClient.Timeout = %v, want 10s", sender.httpClient.Timeout)
+	}
+}
+
+func TestRetryDelay(t *testing.T) {
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 1, want: 0},
+		{attempt: 2, want: 1 * time.Second},
+		{attempt: 3, want: 2 * time.Second},
+		{attempt: 4, want: 4 * time.Second},
+		{attempt: 6, want: 10 * time.Second},
+	}
+
+	for _, tt := range tests {
+		if got := retryDelay(tt.attempt); got != tt.want {
+			t.Errorf("retryDelay(%d) = %v, want %v", tt.attempt, got, tt.want)
+		}
 	}
 }
 
@@ -172,8 +192,15 @@ func TestSender_Send_RetryTimestamp(t *testing.T) {
 	// Verify timestamp in body is consistent
 	// We can decode to map to check specifically the timestamp field, or just string compare (which we did).
 
-	// Verify X-Timestamp changes (as it reflects transmission time)
-	if timestamps[0] == timestamps[1] {
-		t.Errorf("X-Timestamp header should change between retries, got same: %s", timestamps[0])
+	first, err := strconv.ParseInt(timestamps[0], 10, 64)
+	if err != nil {
+		t.Fatalf("failed to parse first X-Timestamp: %v", err)
+	}
+	second, err := strconv.ParseInt(timestamps[1], 10, 64)
+	if err != nil {
+		t.Fatalf("failed to parse second X-Timestamp: %v", err)
+	}
+	if second < first {
+		t.Errorf("X-Timestamp should be monotonic: first=%d second=%d", first, second)
 	}
 }

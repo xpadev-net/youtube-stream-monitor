@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,13 +30,24 @@ const (
 	StateError      State = "error"
 )
 
+// WebhookSender provides webhook delivery.
+type WebhookSender interface {
+	Send(ctx context.Context, url string, payload *webhook.Payload) *webhook.SendResult
+}
+
+// YtDlpClient provides stream status and manifest lookup.
+type YtDlpClient interface {
+	IsStreamLive(ctx context.Context, streamURL string) (bool, *ytdlp.StreamInfo, error)
+	GetManifestURL(ctx context.Context, streamURL string) (string, error)
+}
+
 // Worker monitors a single YouTube stream.
 type Worker struct {
 	cfg            *config.WorkerConfig
-	ytdlpClient    *ytdlp.Client
+	ytdlpClient    YtDlpClient
 	manifestParser *manifest.Parser
 	analyzer       *ffmpeg.Analyzer
-	webhookSender  *webhook.Sender
+	webhookSender  WebhookSender
 	callbackClient *CallbackClient
 
 	// State
@@ -65,13 +78,40 @@ type Worker struct {
 
 // NewWorker creates a new worker.
 func NewWorker(cfg *config.WorkerConfig) *Worker {
+	return NewWorkerWithDeps(cfg, nil, nil, nil, nil, nil)
+}
+
+// NewWorkerWithDeps creates a worker with injectable dependencies for tests.
+func NewWorkerWithDeps(
+	cfg *config.WorkerConfig,
+	ytdlpClient YtDlpClient,
+	manifestParser *manifest.Parser,
+	analyzer *ffmpeg.Analyzer,
+	webhookSender WebhookSender,
+	callbackClient *CallbackClient,
+) *Worker {
+	if ytdlpClient == nil {
+		ytdlpClient = ytdlp.NewClient(cfg.YtDlpPath, cfg.StreamlinkPath, cfg.HTTPProxy, cfg.HTTPSProxy)
+	}
+	if manifestParser == nil {
+		manifestParser = manifest.NewParserWithLimit(cfg.ManifestFetchTimeout, cfg.SegmentMaxBytes)
+	}
+	if analyzer == nil {
+		analyzer = ffmpeg.NewAnalyzer(cfg.FFmpegPath, cfg.FFprobePath, "/tmp/segments", cfg.SilenceDBThreshold)
+	}
+	if webhookSender == nil {
+		webhookSender = webhook.NewSender(cfg.WebhookSigningKey)
+	}
+	if callbackClient == nil {
+		callbackClient = NewCallbackClient(cfg.CallbackURL, cfg.InternalAPIKey)
+	}
 	return &Worker{
 		cfg:            cfg,
-		ytdlpClient:    ytdlp.NewClient(cfg.YtDlpPath, cfg.StreamlinkPath, cfg.HTTPProxy, cfg.HTTPSProxy),
-		manifestParser: manifest.NewParserWithLimit(cfg.ManifestFetchTimeout, cfg.SegmentMaxBytes),
-		analyzer:       ffmpeg.NewAnalyzer(cfg.FFmpegPath, cfg.FFprobePath, "/tmp/segments", cfg.SilenceDBThreshold),
-		webhookSender:  webhook.NewSender(cfg.WebhookSigningKey),
-		callbackClient: NewCallbackClient(cfg.CallbackURL, cfg.InternalAPIKey),
+		ytdlpClient:    ytdlpClient,
+		manifestParser: manifestParser,
+		analyzer:       analyzer,
+		webhookSender:  webhookSender,
+		callbackClient: callbackClient,
 		state:          StateWaiting,
 		streamStatus:   db.StreamStatusUnknown,
 	}
@@ -95,7 +135,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			log.Info("worker stopping due to context cancellation")
-			return w.gracefulShutdown(ctx)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return w.gracefulShutdown(shutdownCtx)
 		default:
 		}
 
@@ -157,6 +199,10 @@ func (w *Worker) waitingMode(ctx context.Context) error {
 				w.sendWebhook(ctx, webhook.EventStreamStarted, map[string]interface{}{
 					"title": info.Title,
 				})
+				if w.getState() == StateError {
+					w.reportStatus(ctx, db.StatusError, nil)
+					return fmt.Errorf("webhook delivery failed")
+				}
 
 				// Transition to monitoring
 				w.setState(StateMonitoring)
@@ -197,6 +243,13 @@ func (w *Worker) waitingMode(ctx context.Context) error {
 					w.mu.Lock()
 					w.streamStatus = db.StreamStatusEnded
 					w.mu.Unlock()
+					w.sendWebhook(ctx, webhook.EventStreamEnded, map[string]interface{}{
+						"reason": info.LiveStatus,
+					})
+					if w.getState() == StateError {
+						w.reportStatus(ctx, db.StatusError, nil)
+						return fmt.Errorf("webhook delivery failed")
+					}
 					w.setState(StateCompleted)
 					w.reportStatus(ctx, db.StatusCompleted, nil)
 					return nil
@@ -224,13 +277,20 @@ func (w *Worker) monitoringMode(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("get manifest URL: %w", err)
 	}
+	if w.isDASHManifestURL(manifestURL) {
+		if err := w.handleDASHManifest(ctx, manifestURL); err != nil {
+			return err
+		}
+		w.reportStatus(ctx, db.StatusCompleted, nil)
+		return nil
+	}
 	w.mu.Lock()
 	w.currentManifestURL = manifestURL
 	w.mu.Unlock()
 
 	log.Info("got manifest URL", zap.String("url", manifestURL))
 
-	manifestRefreshTicker := time.NewTicker(30 * time.Second)
+	manifestRefreshTicker := time.NewTicker(w.cfg.ManifestRefreshInterval)
 	defer manifestRefreshTicker.Stop()
 
 	for {
@@ -253,6 +313,13 @@ func (w *Worker) monitoringMode(ctx context.Context) error {
 				if err != nil {
 					log.Warn("failed to refresh manifest URL", zap.Error(err))
 				} else {
+					if w.isDASHManifestURL(newURL) {
+						if err := w.handleDASHManifest(ctx, newURL); err != nil {
+							return err
+						}
+						w.reportStatus(ctx, db.StatusCompleted, nil)
+						return nil
+					}
 					w.mu.Lock()
 					w.currentManifestURL = newURL
 					w.mu.Unlock()
@@ -265,6 +332,9 @@ func (w *Worker) monitoringMode(ctx context.Context) error {
 		if err := w.analyzeLatestSegment(ctx); err != nil {
 			log.Warn("segment analysis failed", zap.Error(err))
 			if w.handleSegmentError(ctx, err) {
+				if w.getState() == StateError {
+					return fmt.Errorf("webhook delivery failed")
+				}
 				w.reportStatus(ctx, db.StatusCompleted, nil)
 				return nil
 			}
@@ -300,6 +370,9 @@ func (w *Worker) analyzeLatestSegment(ctx context.Context) error {
 		w.sendWebhook(ctx, webhook.EventStreamEnded, map[string]interface{}{
 			"reason": "endlist_detected",
 		})
+		if w.getState() == StateError {
+			return fmt.Errorf("webhook delivery failed")
+		}
 		w.setState(StateCompleted)
 		return nil
 	}
@@ -498,6 +571,9 @@ func (w *Worker) handleSegmentError(ctx context.Context, err error) bool {
 			w.sendWebhook(ctx, webhook.EventStreamEnded, map[string]interface{}{
 				"reason": "segment_error_threshold",
 			})
+			if w.getState() == StateError {
+				return true
+			}
 			w.setState(StateCompleted)
 			return true
 		}
@@ -582,8 +658,34 @@ func (w *Worker) checkLiveStatus(ctx context.Context) error {
 		w.sendWebhook(ctx, webhook.EventStreamEnded, map[string]interface{}{
 			"reason": "stream_no_longer_live",
 		})
+		if w.getState() == StateError {
+			return fmt.Errorf("webhook delivery failed")
+		}
 		w.setState(StateCompleted)
 	}
+	return nil
+}
+
+func (w *Worker) isDASHManifestURL(manifestURL string) bool {
+	parsed, err := url.Parse(manifestURL)
+	if err != nil {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(parsed.Path), ".mpd")
+}
+
+func (w *Worker) handleDASHManifest(ctx context.Context, manifestURL string) error {
+	w.mu.Lock()
+	w.streamStatus = db.StreamStatusEnded
+	w.mu.Unlock()
+	w.sendWebhook(ctx, webhook.EventStreamEnded, map[string]interface{}{
+		"reason":       "dash_not_supported",
+		"manifest_url": manifestURL,
+	})
+	if w.getState() == StateError {
+		return fmt.Errorf("webhook delivery failed")
+	}
+	w.setState(StateCompleted)
 	return nil
 }
 

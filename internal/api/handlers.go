@@ -24,6 +24,29 @@ import (
 
 var youtubeWatchURLRegex = regexp.MustCompile(`^https?://(www\.)?youtube\.com/watch\?v=[a-zA-Z0-9_-]{11}`)
 
+var validMonitorStatuses = map[db.MonitorStatus]bool{
+	db.StatusInitializing: true,
+	db.StatusWaiting:      true,
+	db.StatusMonitoring:   true,
+	db.StatusCompleted:    true,
+	db.StatusStopped:      true,
+	db.StatusError:        true,
+}
+
+var validStreamStatuses = map[db.StreamStatus]bool{
+	db.StreamStatusUnknown:   true,
+	db.StreamStatusScheduled: true,
+	db.StreamStatusLive:      true,
+	db.StreamStatusEnded:     true,
+}
+
+var validHealthStatuses = map[db.HealthStatus]bool{
+	db.HealthOK:      true,
+	db.HealthWarning: true,
+	db.HealthError:   true,
+	db.HealthUnknown: true,
+}
+
 // Handler holds dependencies for API handlers.
 type Handler struct {
 	repo                       *db.MonitorRepository
@@ -342,15 +365,7 @@ func (h *Handler) ListMonitors(c *gin.Context) {
 
 	if status := c.Query("status"); status != "" {
 		s := db.MonitorStatus(status)
-		validStatuses := map[db.MonitorStatus]bool{
-			db.StatusInitializing: true,
-			db.StatusWaiting:      true,
-			db.StatusMonitoring:   true,
-			db.StatusCompleted:    true,
-			db.StatusStopped:      true,
-			db.StatusError:        true,
-		}
-		if !validStatuses[s] {
+		if !validMonitorStatuses[s] {
 			httpapi.RespondValidationError(c, "Invalid status value")
 			return
 		}
@@ -432,15 +447,7 @@ func (h *Handler) UpdateMonitorStatus(c *gin.Context) {
 
 	// Validate status
 	status := db.MonitorStatus(req.Status)
-	validStatuses := map[db.MonitorStatus]bool{
-		db.StatusInitializing: true,
-		db.StatusWaiting:      true,
-		db.StatusMonitoring:   true,
-		db.StatusCompleted:    true,
-		db.StatusStopped:      true,
-		db.StatusError:        true,
-	}
-	if !validStatuses[status] {
+	if !validMonitorStatuses[status] {
 		httpapi.RespondValidationError(c, "Invalid status value")
 		return
 	}
@@ -448,34 +455,22 @@ func (h *Handler) UpdateMonitorStatus(c *gin.Context) {
 	// Pre-validate incoming enum-like fields before any DB operations to avoid partial writes
 	if req.StreamStatus != "" {
 		ss := db.StreamStatus(req.StreamStatus)
-		validStream := map[db.StreamStatus]bool{
-			db.StreamStatusUnknown:   true,
-			db.StreamStatusScheduled: true,
-			db.StreamStatusLive:      true,
-			db.StreamStatusEnded:     true,
-		}
-		if !validStream[ss] {
+		if !validStreamStatuses[ss] {
 			httpapi.RespondValidationError(c, "invalid stream_status: "+req.StreamStatus)
 			return
 		}
 	}
 	if req.Health != nil {
-		validHealth := map[db.HealthStatus]bool{
-			db.HealthOK:      true,
-			db.HealthWarning: true,
-			db.HealthError:   true,
-			db.HealthUnknown: true,
-		}
 		if req.Health.Video != "" {
 			vh := db.HealthStatus(req.Health.Video)
-			if !validHealth[vh] {
+			if !validHealthStatuses[vh] {
 				httpapi.RespondValidationError(c, "invalid health.video: "+req.Health.Video)
 				return
 			}
 		}
 		if req.Health.Audio != "" {
 			ah := db.HealthStatus(req.Health.Audio)
-			if !validHealth[ah] {
+			if !validHealthStatuses[ah] {
 				httpapi.RespondValidationError(c, "invalid health.audio: "+req.Health.Audio)
 				return
 			}

@@ -59,6 +59,7 @@ type WorkerConfig struct {
 	WaitingModeInitialInterval time.Duration
 	WaitingModeDelayedInterval time.Duration
 	ManifestFetchTimeout       time.Duration
+	ManifestRefreshInterval    time.Duration
 	SegmentFetchTimeout        time.Duration
 	SegmentMaxBytes            int64
 	AnalysisInterval           time.Duration
@@ -150,6 +151,7 @@ func LoadWorkerConfig() (*WorkerConfig, error) {
 		WaitingModeInitialInterval: getEnvDuration("WAITING_MODE_INITIAL_INTERVAL", 30*time.Second),
 		WaitingModeDelayedInterval: getEnvDuration("WAITING_MODE_DELAYED_INTERVAL", 10*time.Second),
 		ManifestFetchTimeout:       getEnvDuration("MANIFEST_FETCH_TIMEOUT", 10*time.Second),
+		ManifestRefreshInterval:    getEnvDuration("MANIFEST_REFRESH_INTERVAL", 30*time.Second),
 		SegmentFetchTimeout:        getEnvDuration("SEGMENT_FETCH_TIMEOUT", 30*time.Second),
 		SegmentMaxBytes:            segmentMaxBytes,
 		AnalysisInterval:           getEnvDuration("ANALYSIS_INTERVAL", 10*time.Second),
@@ -207,6 +209,9 @@ func LoadWorkerConfig() (*WorkerConfig, error) {
 	}
 	if cfg.WaitingModeDelayedInterval <= 0 {
 		return nil, fmt.Errorf("WAITING_MODE_DELAYED_INTERVAL must be positive")
+	}
+	if cfg.ManifestRefreshInterval <= 0 {
+		return nil, fmt.Errorf("MANIFEST_REFRESH_INTERVAL must be positive")
 	}
 	if cfg.SegmentMaxBytes <= 0 {
 		return nil, fmt.Errorf("SEGMENT_MAX_BYTES must be positive")
