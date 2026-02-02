@@ -4,6 +4,8 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -64,20 +66,137 @@ func (db *DB) Pool() *pgxpool.Pool {
 func (db *DB) Migrate(ctx context.Context) error {
 	log.Info("running database migrations")
 
-	// Read migration file
-	content, err := migrationsFS.ReadFile("migrations/001_initial_schema.sql")
-	if err != nil {
-		return fmt.Errorf("read migration file: %w", err)
+	if err := db.ensureSchemaMigrations(ctx); err != nil {
+		return fmt.Errorf("ensure schema_migrations: %w", err)
 	}
 
-	// Execute migration
-	_, err = db.pool.Exec(ctx, string(content))
+	files, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
-		return fmt.Errorf("execute migration: %w", err)
+		return fmt.Errorf("read migrations dir: %w", err)
+	}
+
+	var migrationFiles []string
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		name := file.Name()
+		if !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		migrationFiles = append(migrationFiles, name)
+	}
+	if len(migrationFiles) == 0 {
+		log.Info("no migrations found")
+		return nil
+	}
+	sort.Strings(migrationFiles)
+
+	applied, err := db.getAppliedMigrations(ctx)
+	if err != nil {
+		return fmt.Errorf("read applied migrations: %w", err)
+	}
+
+	for _, name := range migrationFiles {
+		if applied[name] {
+			continue
+		}
+		if name == "001_initial_schema.sql" {
+			already, err := db.hasCoreSchema(ctx)
+			if err != nil {
+				return fmt.Errorf("check core schema: %w", err)
+			}
+			if already {
+				if err := db.recordMigration(ctx, name); err != nil {
+					return fmt.Errorf("record baseline migration: %w", err)
+				}
+				applied[name] = true
+				log.Info("baseline migration already applied", zap.String("version", name))
+				continue
+			}
+		}
+
+		content, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			return fmt.Errorf("read migration file %s: %w", name, err)
+		}
+		if err := db.applyMigration(ctx, name, string(content)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", name, err)
+		}
+		applied[name] = true
+		log.Info("applied migration", zap.String("version", name))
 	}
 
 	log.Info("database migrations completed")
 	return nil
+}
+
+func (db *DB) ensureSchemaMigrations(ctx context.Context) error {
+	_, err := db.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL
+		)
+	`)
+	return err
+}
+
+func (db *DB) getAppliedMigrations(ctx context.Context) (map[string]bool, error) {
+	applied := make(map[string]bool)
+	rows, err := db.pool.Query(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return nil, err
+		}
+		applied[version] = true
+	}
+	return applied, rows.Err()
+}
+
+func (db *DB) recordMigration(ctx context.Context, version string) error {
+	_, err := db.pool.Exec(ctx, `
+		INSERT INTO schema_migrations (version, applied_at)
+		VALUES ($1, NOW())
+		ON CONFLICT (version) DO NOTHING
+	`, version)
+	return err
+}
+
+func (db *DB) applyMigration(ctx context.Context, version, sql string) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, sql); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO schema_migrations (version, applied_at)
+		VALUES ($1, NOW())
+		ON CONFLICT (version) DO NOTHING
+	`, version); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (db *DB) hasCoreSchema(ctx context.Context) (bool, error) {
+	var exists bool
+	err := db.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'monitors'
+		)
+	`).Scan(&exists)
+	return exists, err
 }
 
 // Health checks database connectivity.

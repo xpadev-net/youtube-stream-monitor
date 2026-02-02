@@ -2,7 +2,6 @@ package k8s
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -239,14 +238,6 @@ func (r *Reconciler) CreateMonitorPod(ctx context.Context, monitor *db.Monitor, 
 		SecretsName:           secretsName,
 		InternalAPIKeyName:    internalKey,
 		WebhookSigningKeyName: signingKey,
-	}
-
-	// Deserialize config from monitor if needed
-	if monitor.Config.CheckIntervalSec == 0 {
-		var config db.MonitorConfig
-		if err := json.Unmarshal([]byte(`{}`), &config); err == nil {
-			params.Config = &config
-		}
 	}
 
 	pod, err := r.k8sClient.CreateWorkerPod(ctx, params)

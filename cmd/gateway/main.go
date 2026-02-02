@@ -112,7 +112,7 @@ func main() {
 	router.Use(requestLogger())
 
 	// Health check endpoints (no auth required)
-	router.GET("/healthz", healthzHandler(database))
+	router.GET("/healthz", healthzHandler())
 	router.GET("/readyz", readyzHandler(database))
 
 	// External API v1 (API key auth required)
@@ -166,7 +166,7 @@ func main() {
 	log.Info("server stopped")
 }
 
-func healthzHandler(database *db.DB) gin.HandlerFunc {
+func healthzHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	}

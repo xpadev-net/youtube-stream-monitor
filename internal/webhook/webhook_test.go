@@ -95,12 +95,31 @@ func TestNewSender(t *testing.T) {
 		t.Errorf("NewSender().signingKey = %v, want test-key", sender.signingKey)
 	}
 
-	if sender.maxRetries != 3 {
-		t.Errorf("NewSender().maxRetries = %v, want 3", sender.maxRetries)
+	if sender.maxRetries != 4 {
+		t.Errorf("NewSender().maxRetries = %v, want 4", sender.maxRetries)
 	}
 
 	if sender.httpClient.Timeout != 10*time.Second {
 		t.Errorf("NewSender().httpClient.Timeout = %v, want 10s", sender.httpClient.Timeout)
+	}
+}
+
+func TestRetryDelay(t *testing.T) {
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 1, want: 0},
+		{attempt: 2, want: 1 * time.Second},
+		{attempt: 3, want: 2 * time.Second},
+		{attempt: 4, want: 4 * time.Second},
+		{attempt: 6, want: 10 * time.Second},
+	}
+
+	for _, tt := range tests {
+		if got := retryDelay(tt.attempt); got != tt.want {
+			t.Errorf("retryDelay(%d) = %v, want %v", tt.attempt, got, tt.want)
+		}
 	}
 }
 
