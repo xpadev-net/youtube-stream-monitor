@@ -208,7 +208,56 @@ func (db *DB) hasBaselineSchema(ctx context.Context, conn *pgxpool.Conn) (bool, 
 	if err != nil {
 		return false, err
 	}
-	return count == 3, nil
+	if count != 3 {
+		return false, nil
+	}
+
+	var indexExists bool
+	if err := conn.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'idx_monitors_stream_url_active'
+		)
+	`).Scan(&indexExists); err != nil {
+		return false, err
+	}
+	if !indexExists {
+		return false, nil
+	}
+
+	var triggerExists bool
+	if err := conn.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_trigger t
+			JOIN pg_class c ON t.tgrelid = c.oid
+			JOIN pg_namespace n ON c.relnamespace = n.oid
+			WHERE n.nspname = 'public'
+			  AND c.relname = 'monitors'
+			  AND t.tgname = 'update_monitors_updated_at'
+			  AND NOT t.tgisinternal
+		)
+	`).Scan(&triggerExists); err != nil {
+		return false, err
+	}
+	if !triggerExists {
+		return false, nil
+	}
+
+	var functionExists bool
+	if err := conn.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_proc p
+			JOIN pg_namespace n ON p.pronamespace = n.oid
+			WHERE n.nspname = 'public'
+			  AND p.proname = 'update_updated_at_column'
+		)
+	`).Scan(&functionExists); err != nil {
+		return false, err
+	}
+
+	return functionExists, nil
 }
 
 func (db *DB) withAdvisoryLock(ctx context.Context, conn *pgxpool.Conn, key int64, fn func(context.Context, *pgxpool.Conn) error) error {
@@ -227,9 +276,25 @@ func splitSQLStatements(sql string) []string {
 	var builder strings.Builder
 	var dollarTag string
 	inSingle := false
+	inLineComment := false
+	inBlockComment := false
 
 	for i := 0; i < len(sql); i++ {
 		ch := sql[i]
+
+		if inLineComment {
+			if ch == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			if ch == '*' && i+1 < len(sql) && sql[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
 
 		if dollarTag != "" {
 			if strings.HasPrefix(sql[i:], dollarTag) {
@@ -276,6 +341,17 @@ func splitSQLStatements(sql string) []string {
 				i = j
 				continue
 			}
+		}
+
+		if ch == '-' && i+1 < len(sql) && sql[i+1] == '-' {
+			inLineComment = true
+			i++
+			continue
+		}
+		if ch == '/' && i+1 < len(sql) && sql[i+1] == '*' {
+			inBlockComment = true
+			i++
+			continue
 		}
 
 		if ch == ';' {

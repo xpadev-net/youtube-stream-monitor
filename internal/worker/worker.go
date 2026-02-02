@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -664,7 +665,11 @@ func (w *Worker) checkLiveStatus(ctx context.Context) error {
 }
 
 func (w *Worker) isDASHManifestURL(manifestURL string) bool {
-	return strings.Contains(strings.ToLower(manifestURL), ".mpd")
+	parsed, err := url.Parse(manifestURL)
+	if err != nil {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(parsed.Path), ".mpd")
 }
 
 func (w *Worker) handleDASHManifest(ctx context.Context, manifestURL string) error {
