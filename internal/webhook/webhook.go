@@ -54,6 +54,9 @@ type Sender struct {
 func NewSender(signingKey string) *Sender {
 	client := validation.NewSafeHTTPClient(10 * time.Second)
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("too many redirects")
+		}
 		if err := validation.ValidateOutboundURL(req.Context(), req.URL.String(), false); err != nil {
 			return fmt.Errorf("redirect url not allowed: %w", err)
 		}
