@@ -83,6 +83,8 @@ monitoring:
   maxMonitors: 50
   # Reconciliation timeout in seconds
   reconcileTimeout: 30
+  # Optional webhook URL for reconciliation errors
+  reconciliationWebhookUrl: ""
 
 # Proxy configuration (optional)
 proxy:

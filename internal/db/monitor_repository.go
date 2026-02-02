@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	ErrMonitorNotFound   = errors.New("monitor not found")
-	ErrDuplicateMonitor  = errors.New("duplicate monitor for stream URL")
+	ErrMonitorNotFound  = errors.New("monitor not found")
+	ErrDuplicateMonitor = errors.New("duplicate monitor for stream URL")
 )
 
 // MonitorRepository handles monitor database operations.
@@ -263,7 +263,7 @@ func (r *MonitorRepository) List(ctx context.Context, params ListParams) ([]*Mon
 // UpdateStatus updates the status of a monitor.
 func (r *MonitorRepository) UpdateStatus(ctx context.Context, id string, status MonitorStatus) error {
 	result, err := r.db.pool.Exec(ctx, `
-		UPDATE monitors SET status = $2 WHERE id = $1
+		UPDATE monitors SET status = $2, updated_at = NOW() WHERE id = $1
 	`, id, status)
 	if err != nil {
 		return fmt.Errorf("update monitor status: %w", err)
@@ -279,7 +279,7 @@ func (r *MonitorRepository) UpdateStatus(ctx context.Context, id string, status 
 // UpdateStatusWithCondition updates the status only if the current status matches.
 func (r *MonitorRepository) UpdateStatusWithCondition(ctx context.Context, id string, currentStatus, newStatus MonitorStatus) (bool, error) {
 	result, err := r.db.pool.Exec(ctx, `
-		UPDATE monitors SET status = $3 WHERE id = $1 AND status = $2
+		UPDATE monitors SET status = $3, updated_at = NOW() WHERE id = $1 AND status = $2
 	`, id, currentStatus, newStatus)
 	if err != nil {
 		return false, fmt.Errorf("update monitor status: %w", err)
@@ -291,7 +291,7 @@ func (r *MonitorRepository) UpdateStatusWithCondition(ctx context.Context, id st
 // UpdatePodName updates the pod name for a monitor.
 func (r *MonitorRepository) UpdatePodName(ctx context.Context, id string, podName string) error {
 	result, err := r.db.pool.Exec(ctx, `
-		UPDATE monitors SET pod_name = $2 WHERE id = $1
+		UPDATE monitors SET pod_name = $2, updated_at = NOW() WHERE id = $1
 	`, id, podName)
 	if err != nil {
 		return fmt.Errorf("update pod name: %w", err)

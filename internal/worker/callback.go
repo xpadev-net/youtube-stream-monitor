@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xpadev-net/youtube-stream-tracker/internal/db"
+	"github.com/xpadev-net/youtube-stream-tracker/internal/validation"
 )
 
 // CallbackClient handles communication with the Gateway's internal API.
@@ -23,9 +24,8 @@ func NewCallbackClient(baseURL, internalAPIKey string) *CallbackClient {
 	return &CallbackClient{
 		baseURL:        baseURL,
 		internalAPIKey: internalAPIKey,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		// Allow private IPs for in-cluster gateway service resolution.
+		httpClient: validation.NewSafeHTTPClientWithPrivate(10*time.Second, true),
 	}
 }
 
@@ -43,17 +43,23 @@ type StatusUpdate struct {
 type StatusRequest struct {
 	Status       string `json:"status"`
 	StreamStatus string `json:"stream_status,omitempty"`
-	VideoHealth  string `json:"video_health,omitempty"`
-	AudioHealth  string `json:"audio_health,omitempty"`
-	Stats        *struct {
-		TotalSegments  int `json:"total_segments,omitempty"`
-		BlackoutEvents int `json:"blackout_events,omitempty"`
-		SilenceEvents  int `json:"silence_events,omitempty"`
-	} `json:"stats,omitempty"`
+	Health       *struct {
+		Video string `json:"video"`
+		Audio string `json:"audio"`
+	} `json:"health,omitempty"`
+	Statistics *struct {
+		TotalSegmentsAnalyzed int `json:"total_segments_analyzed,omitempty"`
+		BlackoutEvents        int `json:"blackout_events,omitempty"`
+		SilenceEvents         int `json:"silence_events,omitempty"`
+	} `json:"statistics,omitempty"`
 }
 
 // ReportStatus reports the current status to the gateway.
 func (c *CallbackClient) ReportStatus(ctx context.Context, monitorID string, status db.MonitorStatus, update *StatusUpdate) error {
+	// Internal callbacks are expected to target the in-cluster gateway service.
+	if err := validation.ValidateOutboundURL(ctx, c.baseURL, true); err != nil {
+		return fmt.Errorf("invalid internal callback url: %w", err)
+	}
 	url := fmt.Sprintf("%s/internal/v1/monitors/%s/status", c.baseURL, monitorID)
 
 	req := StatusRequest{
@@ -61,18 +67,27 @@ func (c *CallbackClient) ReportStatus(ctx context.Context, monitorID string, sta
 	}
 
 	if update != nil {
-		req.StreamStatus = update.StreamStatus
-		req.VideoHealth = update.VideoHealth
-		req.AudioHealth = update.AudioHealth
-		if update.TotalSegments > 0 || update.BlackoutEvents > 0 || update.SilenceEvents > 0 {
-			req.Stats = &struct {
-				TotalSegments  int `json:"total_segments,omitempty"`
-				BlackoutEvents int `json:"blackout_events,omitempty"`
-				SilenceEvents  int `json:"silence_events,omitempty"`
+		if update.StreamStatus != "" {
+			req.StreamStatus = update.StreamStatus
+		}
+		if update.VideoHealth != "" || update.AudioHealth != "" {
+			req.Health = &struct {
+				Video string `json:"video"`
+				Audio string `json:"audio"`
 			}{
-				TotalSegments:  update.TotalSegments,
-				BlackoutEvents: update.BlackoutEvents,
-				SilenceEvents:  update.SilenceEvents,
+				Video: update.VideoHealth,
+				Audio: update.AudioHealth,
+			}
+		}
+		if update.TotalSegments > 0 || update.BlackoutEvents > 0 || update.SilenceEvents > 0 {
+			req.Statistics = &struct {
+				TotalSegmentsAnalyzed int `json:"total_segments_analyzed,omitempty"`
+				BlackoutEvents        int `json:"blackout_events,omitempty"`
+				SilenceEvents         int `json:"silence_events,omitempty"`
+			}{
+				TotalSegmentsAnalyzed: update.TotalSegments,
+				BlackoutEvents:        update.BlackoutEvents,
+				SilenceEvents:         update.SilenceEvents,
 			}
 		}
 	}

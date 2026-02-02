@@ -3,7 +3,7 @@
 
 -- monitors table
 CREATE TABLE IF NOT EXISTS monitors (
-    id VARCHAR(73) PRIMARY KEY,  -- mon- + uuid (36 chars with hyphens)
+    id VARCHAR(40) PRIMARY KEY,  -- mon- + uuid (36 chars with hyphens)
     stream_url VARCHAR(512) NOT NULL,
     callback_url VARCHAR(512) NOT NULL,
     config JSONB NOT NULL DEFAULT '{}',
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS monitors (
 
 -- monitor_stats table
 CREATE TABLE IF NOT EXISTS monitor_stats (
-    monitor_id VARCHAR(73) PRIMARY KEY REFERENCES monitors(id) ON DELETE CASCADE,
+    monitor_id VARCHAR(40) PRIMARY KEY REFERENCES monitors(id) ON DELETE CASCADE,
     total_segments INT NOT NULL DEFAULT 0,
     blackout_events INT NOT NULL DEFAULT 0,
     silence_events INT NOT NULL DEFAULT 0,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS monitor_stats (
 -- monitor_events table
 CREATE TABLE IF NOT EXISTS monitor_events (
     id UUID PRIMARY KEY,
-    monitor_id VARCHAR(73) NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+    monitor_id VARCHAR(40) NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
     event_type VARCHAR(50) NOT NULL,
     payload JSONB NOT NULL,
     webhook_status VARCHAR(20) NOT NULL DEFAULT 'pending',

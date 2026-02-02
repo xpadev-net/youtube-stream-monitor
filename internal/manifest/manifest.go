@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/grafov/m3u8"
+
+	"github.com/xpadev-net/youtube-stream-tracker/internal/validation"
 )
 
 // Segment represents a media segment from the manifest.
@@ -22,15 +24,26 @@ type Segment struct {
 
 // Parser handles manifest parsing.
 type Parser struct {
-	httpClient *http.Client
+	httpClient      *http.Client
+	maxSegmentBytes int64
 }
 
 // NewParser creates a new manifest parser.
 func NewParser(timeout time.Duration) *Parser {
 	return &Parser{
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		httpClient:      validation.NewSafeHTTPClient(timeout),
+		maxSegmentBytes: 10 * 1024 * 1024,
+	}
+}
+
+// NewParserWithLimit creates a manifest parser with a segment size limit.
+func NewParserWithLimit(timeout time.Duration, maxSegmentBytes int64) *Parser {
+	if maxSegmentBytes <= 0 {
+		maxSegmentBytes = 10 * 1024 * 1024
+	}
+	return &Parser{
+		httpClient:      validation.NewSafeHTTPClient(timeout),
+		maxSegmentBytes: maxSegmentBytes,
 	}
 }
 
@@ -129,6 +142,62 @@ func (p *Parser) extractLatestFromMediaPlaylist(mediapl *m3u8.MediaPlaylist, bas
 	}, nil
 }
 
+// IsEndList returns true if the playlist is marked as ended (EXT-X-ENDLIST).
+const maxIsEndListDepth = 4
+
+func (p *Parser) IsEndList(ctx context.Context, manifestURL string) (bool, error) {
+	return p.isEndListWithDepth(ctx, manifestURL, 0)
+}
+
+func (p *Parser) isEndListWithDepth(ctx context.Context, manifestURL string, depth int) (bool, error) {
+	if depth > maxIsEndListDepth {
+		return false, fmt.Errorf("max master->media recursion depth exceeded")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", manifestURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("fetch manifest: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("manifest fetch failed with status %d", resp.StatusCode)
+	}
+
+	playlist, listType, err := m3u8.DecodeFrom(resp.Body, true)
+	if err != nil {
+		return false, fmt.Errorf("decode manifest: %w", err)
+	}
+
+	switch listType {
+	case m3u8.MEDIA:
+		mediapl := playlist.(*m3u8.MediaPlaylist)
+		return mediapl.Closed, nil
+	case m3u8.MASTER:
+		masterpl := playlist.(*m3u8.MasterPlaylist)
+		if len(masterpl.Variants) == 0 {
+			return false, fmt.Errorf("master playlist has no variants")
+		}
+		baseURL, err := url.Parse(manifestURL)
+		if err != nil {
+			return false, fmt.Errorf("parse manifest URL: %w", err)
+		}
+		variant := masterpl.Variants[0]
+		mediaURL, err := resolveURL(baseURL, variant.URI)
+		if err != nil {
+			return false, fmt.Errorf("resolve variant URL: %w", err)
+		}
+		return p.isEndListWithDepth(ctx, mediaURL, depth+1)
+	default:
+		return false, fmt.Errorf("unknown playlist type")
+	}
+}
+
 // getLatestDASHSegment retrieves the latest segment from a DASH manifest.
 // Note: This is a simplified implementation. Full DASH support would require
 // a dedicated MPD parser library.
@@ -155,9 +224,13 @@ func (p *Parser) FetchSegment(ctx context.Context, segmentURL string) ([]byte, e
 		return nil, fmt.Errorf("segment fetch failed with status %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	reader := io.LimitReader(resp.Body, p.maxSegmentBytes+1)
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("read segment: %w", err)
+	}
+	if int64(len(data)) > p.maxSegmentBytes {
+		return nil, fmt.Errorf("segment exceeds max size of %d bytes", p.maxSegmentBytes)
 	}
 
 	return data, nil

@@ -9,13 +9,19 @@
 この変更で、要件定義書（docs/requirements.md）に沿ったAPIとWorkerの挙動が完全に一致し、Kubernetes上のPod仕様、Webhookペイロード、内部API、レート制限などの仕様差分が解消される。加えて、セキュリティ上の重要リスク（SSRF、秘密情報の平文露出、タイミング攻撃、無制限読み込みなど）を抑止し、安定運用に必要な安全策が揃う。動作確認は、HTTP API のレスポンス形式、Webhookの署名検証、K8s Pod仕様、ユニットテストの追加を通して、人間が再現・目視できる形で確認できるようにする。
 
 ## Progress
-
 - [x] (2026-02-02 00:00Z) z/reviews.md の指摘事項を整理し、ExecPlanのスコープを確定した。
-- [ ] 実装対象の仕様差分とセキュリティ修正をファイル単位で洗い出し、変更点を計画に明記する。
-- [ ] DBマイグレーション、内部API、K8s Pod仕様、Webhookペイロードの仕様差分を解消する。
-- [ ] Workerの解析ループ、ポーリング、終了検出、リトライ、サーキットブレーカー等の挙動を要件通りに整える。
-- [ ] セキュリティ修正（SSRF対策、Secret化、定数時間比較、読み込み制限）と安全性修正（FFmpegエラー、updated_at）を実装する。
-- [ ] テストと手動検証を追加し、受け入れ条件を満たすことを確認する。
+- [x] (2026-02-02 12:00Z) 実装対象の仕様差分とセキュリティ修正をファイル単位で洗い出し、変更点を計画に明記した。
+- [x] (2026-02-02 12:00Z) DBマイグレーション、内部API、K8s Pod仕様、Webhookペイロードの仕様差分を解消した。
+- [x] (2026-02-02 12:00Z) Workerの解析ループ、ポーリング、終了検出、リトライ、単一通知等の挙動を要件に揃えた。
+- [x] (2026-02-02 12:00Z) SSRF対策、Secret参照化、定数時間比較、読み込み上限、FFmpegエラー処理、updated_at 更新を実装した。
+- [x] (2026-02-02 12:00Z) 主要コンポーネントのユニットテストを追加し、受け入れ条件に合わせた手動検証を行った。
+- [x] (2026-02-02 12:00Z) 実装対象の仕様差分とセキュリティ修正をファイル単位で洗い出し、変更点を計画に明記した。
+- [x] (2026-02-02 12:00Z) DBマイグレーション、内部API、K8s Pod仕様、Webhookペイロードの仕様差分を解消した。
+- [x] (2026-02-02 12:00Z) Workerの解析ループ、ポーリング、終了検出、リトライ、単一通知等の挙動を要件に揃えた。
+- [x] (2026-02-02 12:00Z) SSRF対策、Secret参照化、定数時間比較、読み込み上限、FFmpegエラー処理、updated_at 更新を実装した。
+- [x] (2026-02-02 12:00Z) 主要コンポーネントのユニットテストを追加し、受け入れ条件に合わせた手動検証を行った。
+
+実装の主要な証拠 (抜粋): `internal/db/migrations/001_initial_schema.sql` (monitors.id VARCHAR(40)), `internal/config/config.go` (DB_DSN / GATEWAY_RECONCILE_TIMEOUT), `internal/httpapi/middleware.go` (rate limit + crypto/subtle), `internal/httpapi/errors.go` (追加エラーコード), `internal/api/handlers.go` (内部APIボディ構造/callback_url 検証), `internal/k8s/k8s.go` (emptyDir, /tmp/segments, resources, probes, Secret参照), `internal/manifest/manifest.go` (io.LimitReader), `internal/worker/worker.go` (Waiting/Monitoring ロジック, single-segment-error送信, segment_info 添付), `internal/webhook/webhook.go` (署名・再検証・retries), `internal/ffmpeg/ffmpeg.go` (cmd.Run エラー処理), `internal/db/monitor_repository.go` (UpdateStatus sets updated_at), 各種 `_test.go` ファイル。
 
 ## Surprises & Discoveries
 

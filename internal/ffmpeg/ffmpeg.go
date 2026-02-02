@@ -15,12 +15,12 @@ import (
 
 // BlackDetectResult contains the result of black frame detection.
 type BlackDetectResult struct {
-	HasBlackFrames    bool
-	BlackDuration     float64
-	BlackStartTime    float64
-	TotalDuration     float64
-	BlackRatio        float64
-	FullyBlack        bool
+	HasBlackFrames bool
+	BlackDuration  float64
+	BlackStartTime float64
+	TotalDuration  float64
+	BlackRatio     float64
+	FullyBlack     bool
 }
 
 // SilenceDetectResult contains the result of silence detection.
@@ -41,9 +41,9 @@ type AnalysisResult struct {
 
 // Analyzer handles FFmpeg-based media analysis.
 type Analyzer struct {
-	ffmpegPath  string
-	ffprobePath string
-	tmpDir      string
+	ffmpegPath         string
+	ffprobePath        string
+	tmpDir             string
 	silenceDBThreshold float64
 }
 
@@ -59,9 +59,9 @@ func NewAnalyzer(ffmpegPath, ffprobePath, tmpDir string, silenceDBThreshold floa
 		silenceDBThreshold = -50
 	}
 	return &Analyzer{
-		ffmpegPath:  ffmpegPath,
-		ffprobePath: ffprobePath,
-		tmpDir:      tmpDir,
+		ffmpegPath:         ffmpegPath,
+		ffprobePath:        ffprobePath,
+		tmpDir:             tmpDir,
 		silenceDBThreshold: silenceDBThreshold,
 	}
 }
@@ -142,7 +142,9 @@ func (a *Analyzer) detectBlack(ctx context.Context, filePath string, totalDurati
 	cmd.Stderr = &stderr
 
 	// FFmpeg outputs blackdetect info to stderr
-	_ = cmd.Run() // Ignore error as ffmpeg returns non-zero for some valid cases
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg blackdetect failed: %w (stderr: %s)", err, stderr.String())
+	}
 
 	result := &BlackDetectResult{
 		TotalDuration: totalDuration,
@@ -201,7 +203,9 @@ func (a *Analyzer) detectSilence(ctx context.Context, filePath string, totalDura
 	cmd.Stderr = &stderr
 
 	// FFmpeg outputs silencedetect info to stderr
-	_ = cmd.Run() // Ignore error as ffmpeg returns non-zero for some valid cases
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg silencedetect failed: %w (stderr: %s)", err, stderr.String())
+	}
 
 	result := &SilenceDetectResult{
 		TotalDuration: totalDuration,

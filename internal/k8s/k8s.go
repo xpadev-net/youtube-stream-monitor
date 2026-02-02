@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -34,8 +35,8 @@ const (
 
 // Client wraps Kubernetes client operations.
 type Client struct {
-	clientset  *kubernetes.Clientset
-	namespace  string
+	clientset   *kubernetes.Clientset
+	namespace   string
 	workerImage string
 	workerTag   string
 }
@@ -92,16 +93,19 @@ func NewClient(cfg Config) (*Client, error) {
 
 // CreatePodParams contains parameters for creating a worker pod.
 type CreatePodParams struct {
-	MonitorID        string
-	StreamURL        string
-	CallbackURL      string
-	InternalAPIKey   string
-	WebhookURL       string
-	WebhookSigningKey string
-	Config           *db.MonitorConfig
-	Metadata         json.RawMessage
-	HTTPProxy        string
-	HTTPSProxy       string
+	MonitorID             string
+	StreamURL             string
+	CallbackURL           string
+	InternalAPIKey        string
+	WebhookURL            string
+	WebhookSigningKey     string
+	Config                *db.MonitorConfig
+	Metadata              json.RawMessage
+	HTTPProxy             string
+	HTTPSProxy            string
+	SecretsName           string
+	InternalAPIKeyName    string
+	WebhookSigningKeyName string
 }
 
 // CreateWorkerPod creates a new worker pod for monitoring.
@@ -119,10 +123,43 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 		{Name: "MONITOR_ID", Value: params.MonitorID},
 		{Name: "STREAM_URL", Value: params.StreamURL},
 		{Name: "CALLBACK_URL", Value: params.CallbackURL},
-		{Name: "INTERNAL_API_KEY", Value: params.InternalAPIKey},
 		{Name: "WEBHOOK_URL", Value: params.WebhookURL},
-		{Name: "WEBHOOK_SIGNING_KEY", Value: params.WebhookSigningKey},
 		{Name: "CONFIG_JSON", Value: string(configJSON)},
+	}
+	if params.SecretsName != "" {
+		internalKey := params.InternalAPIKeyName
+		if internalKey == "" {
+			internalKey = "internal-api-key"
+		}
+		signingKey := params.WebhookSigningKeyName
+		if signingKey == "" {
+			signingKey = "webhook-signing-key"
+		}
+		envVars = append(envVars,
+			corev1.EnvVar{
+				Name: "INTERNAL_API_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: params.SecretsName},
+						Key:                  internalKey,
+					},
+				},
+			},
+			corev1.EnvVar{
+				Name: "WEBHOOK_SIGNING_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: params.SecretsName},
+						Key:                  signingKey,
+					},
+				},
+			},
+		)
+	} else {
+		envVars = append(envVars,
+			corev1.EnvVar{Name: "INTERNAL_API_KEY", Value: params.InternalAPIKey},
+			corev1.EnvVar{Name: "WEBHOOK_SIGNING_KEY", Value: params.WebhookSigningKey},
+		)
 	}
 
 	// Add proxy settings if configured
@@ -148,14 +185,29 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyOnFailure,
+			TerminationGracePeriodSeconds: int64Ptr(30),
+			RestartPolicy:                 corev1.RestartPolicyOnFailure,
+			Volumes: []corev1.Volume{
+				{
+					Name: "workdir",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+			},
 			Containers: []corev1.Container{
 				{
-					Name:  "worker",
+					Name:  "monitor",
 					Image: fmt.Sprintf("%s:%s", c.workerImage, c.workerTag),
 					Env:   envVars,
 					Ports: []corev1.ContainerPort{
 						{ContainerPort: 8081, Protocol: corev1.ProtocolTCP},
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "workdir",
+							MountPath: "/tmp/segments",
+						},
 					},
 					LivenessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
@@ -166,6 +218,8 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 						},
 						InitialDelaySeconds: 10,
 						PeriodSeconds:       30,
+						TimeoutSeconds:      5,
+						FailureThreshold:    3,
 					},
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
@@ -176,8 +230,19 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 						},
 						InitialDelaySeconds: 5,
 						PeriodSeconds:       10,
+						TimeoutSeconds:      5,
+						FailureThreshold:    3,
 					},
-					Resources: corev1.ResourceRequirements{},
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("100m"),
+							corev1.ResourceMemory: resource.MustParse("256Mi"),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("500m"),
+							corev1.ResourceMemory: resource.MustParse("512Mi"),
+						},
+					},
 				},
 			},
 		},
@@ -194,6 +259,10 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 	)
 
 	return created, nil
+}
+
+func int64Ptr(value int64) *int64 {
+	return &value
 }
 
 // GetGatewayInternalBaseURL returns the base URL for the gateway internal API.
@@ -334,4 +403,3 @@ func (c *Client) WaitForPodReady(ctx context.Context, monitorID string, timeout 
 
 	return fmt.Errorf("timeout waiting for pod to be ready")
 }
-

@@ -36,14 +36,14 @@ func TestPodNameFormat(t *testing.T) {
 // TestCreatePodParams tests the structure of CreatePodParams
 func TestCreatePodParams(t *testing.T) {
 	params := CreatePodParams{
-		MonitorID:        "mon-123",
-		StreamURL:        "https://www.youtube.com/watch?v=test",
-		CallbackURL:      "http://gateway:8080",
-		InternalAPIKey:   "internal-key",
-		WebhookURL:       "https://example.com/webhook",
+		MonitorID:         "mon-123",
+		StreamURL:         "https://www.youtube.com/watch?v=test",
+		CallbackURL:       "http://gateway:8080",
+		InternalAPIKey:    "internal-key",
+		WebhookURL:        "https://example.com/webhook",
 		WebhookSigningKey: "signing-key",
-		HTTPProxy:        "",
-		HTTPSProxy:       "",
+		HTTPProxy:         "",
+		HTTPSProxy:        "",
 	}
 
 	if params.MonitorID != "mon-123" {

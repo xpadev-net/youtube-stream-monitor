@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -65,7 +66,7 @@ func TestIsValidYouTubeWatchURL(t *testing.T) {
 
 func TestNewHandler(t *testing.T) {
 	repo := &db.MonitorRepository{}
-	handler := NewHandler(repo, 50, nil, "internal-key", "signing-key")
+	handler := NewHandler(repo, 50, nil, "internal-key", "signing-key", "stream-monitor-secrets", "internal-api-key", "webhook-signing-key")
 
 	if handler.repo != repo {
 		t.Error("NewHandler() repo not set correctly")
@@ -108,6 +109,38 @@ func TestCreateMonitorRequest(t *testing.T) {
 
 	if unmarshaled.CallbackURL != req.CallbackURL {
 		t.Errorf("Unmarshaled CallbackURL = %v, want %v", unmarshaled.CallbackURL, req.CallbackURL)
+	}
+}
+
+func TestUpdateMonitorStatusValidation(t *testing.T) {
+	// Setup a handler with a fake repo that returns stats
+	repo := &db.MonitorRepository{}
+	handler := NewHandler(repo, 50, nil, "internal-key", "signing-key", "stream-monitor-secrets", "internal-api-key", "webhook-signing-key")
+
+	router := setupTestRouter()
+	router.PUT("/internal/v1/monitors/:monitor_id/status", handler.UpdateMonitorStatus)
+
+	// Prepare a request with invalid stream_status
+	validID := ids.NewMonitorID()
+	body := `{"status":"monitoring","stream_status":"invalid_status"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/internal/v1/monitors/"+validID+"/status", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid stream_status, got %d", w.Code)
+	}
+
+	// Prepare a request with invalid health.video
+	body = `{"status":"monitoring","health":{"video":"bad","audio":"ok"}}`
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("PUT", "/internal/v1/monitors/"+validID+"/status", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid health.video, got %d", w.Code)
 	}
 }
 
@@ -262,7 +295,7 @@ func TestHandlerStructure(t *testing.T) {
 	router := setupTestRouter()
 	repo := &db.MonitorRepository{}
 
-	handler := NewHandler(repo, 50, nil, "test-key", "test-signing-key")
+	handler := NewHandler(repo, 50, nil, "test-key", "test-signing-key", "stream-monitor-secrets", "internal-api-key", "webhook-signing-key")
 
 	// Test that handler can be used in a route
 	router.GET("/test", func(c *gin.Context) {
