@@ -298,7 +298,7 @@ func (w *Worker) analyzeLatestSegment(ctx context.Context) error {
 	}
 	if isEndList {
 		w.sendWebhook(ctx, webhook.EventStreamEnded, map[string]interface{}{
-			"data": map[string]interface{}{"reason": "endlist_detected"},
+			"reason": "endlist_detected",
 		})
 		w.setState(StateCompleted)
 		return nil
@@ -496,7 +496,7 @@ func (w *Worker) handleSegmentError(ctx context.Context, err error) bool {
 		}
 		if !isLive {
 			w.sendWebhook(ctx, webhook.EventStreamEnded, map[string]interface{}{
-				"data": map[string]interface{}{"reason": "segment_error_threshold"},
+				"reason": "segment_error_threshold",
 			})
 			w.setState(StateCompleted)
 			return true
@@ -580,7 +580,7 @@ func (w *Worker) checkLiveStatus(ctx context.Context) error {
 	}
 	if !isLive {
 		w.sendWebhook(ctx, webhook.EventStreamEnded, map[string]interface{}{
-			"data": map[string]interface{}{"reason": "stream_no_longer_live"},
+			"reason": "stream_no_longer_live",
 		})
 		w.setState(StateCompleted)
 	}
