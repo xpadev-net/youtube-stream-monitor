@@ -378,7 +378,10 @@ func resolveDASHBaseURL(mpd *dashMPD, representation *dashRepresentation, manife
 	if err != nil {
 		return "", fmt.Errorf("parse manifest url: %w", err)
 	}
-	base.Path = path.Dir(base.Path) + "/"
+	base.Path = path.Dir(base.Path)
+	if !strings.HasSuffix(base.Path, "/") {
+		base.Path += "/"
+	}
 	base.RawQuery = ""
 	base.Fragment = ""
 	return base.String(), nil

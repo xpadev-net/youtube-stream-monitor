@@ -95,6 +95,7 @@ type Worker struct {
 	// Shutdown state
 	shutdownRequested bool
 	shutdownCh        chan struct{}
+	cancelWork        context.CancelFunc
 
 	// Metadata for webhooks
 	metadata json.RawMessage
@@ -160,10 +161,12 @@ func (w *Worker) Run(ctx context.Context) error {
 	}()
 
 	workCtx, cancelWork := context.WithCancel(ctx)
+	w.mu.Lock()
+	w.cancelWork = cancelWork
+	w.mu.Unlock()
 	defer cancelWork()
 	go func() {
 		<-ctx.Done()
-		cancelWork()
 		if w.requestShutdown() {
 			log.Info("shutdown requested")
 		}
@@ -781,12 +784,17 @@ func (w *Worker) gracefulShutdown(ctx context.Context) error {
 
 func (w *Worker) requestShutdown() bool {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.shutdownRequested {
+		w.mu.Unlock()
 		return false
 	}
 	w.shutdownRequested = true
 	close(w.shutdownCh)
+	cancelWork := w.cancelWork
+	w.mu.Unlock()
+	if cancelWork != nil {
+		cancelWork()
+	}
 	return true
 }
 
