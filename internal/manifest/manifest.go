@@ -292,7 +292,7 @@ func resolveURL(base *url.URL, ref string) (string, error) {
 	}
 	resolved := *base
 	if strings.HasPrefix(ref, "/") {
-		resolved.Path = path.Clean(refURL.Path)
+		resolved.Path = refURL.Path
 	} else {
 		resolved.Path = path.Join(path.Dir(base.Path), refURL.Path)
 	}
@@ -317,9 +317,9 @@ type dashAdaptationSet struct {
 }
 
 type dashRepresentation struct {
-	ID             string             `xml:"id,attr"`
-	Bandwidth      int64              `xml:"bandwidth,attr"`
-	BaseURL        string             `xml:"BaseURL"`
+	ID              string               `xml:"id,attr"`
+	Bandwidth       int64                `xml:"bandwidth,attr"`
+	BaseURL         string               `xml:"BaseURL"`
 	SegmentTemplate *dashSegmentTemplate `xml:"SegmentTemplate"`
 }
 
@@ -412,6 +412,9 @@ func buildLatestDASHSegment(baseURL string, template *dashSegmentTemplate, repre
 				currentTime = seg.T
 			}
 			repeat := seg.R
+			// SegmentTimeline semantics: r=-1 repeats until the next S element, period end, or MPD update.
+			// Clamp negative seg.R to 0 to avoid infinite repeats in offline/static parsing
+			// (prevents infinite loops/counting); live MPDs should advance via periodic updates.
 			if repeat < 0 {
 				repeat = 0
 			}
@@ -504,7 +507,7 @@ func fillSegmentTemplate(baseURL string, media string, representation *dashRepre
 	return resolveURL(base, replaced)
 }
 
-var mpdDurationPattern = regexp.MustCompile(`^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$`)
+var mpdDurationPattern = regexp.MustCompile(`^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$`)
 
 func parseMPDDuration(mpd *dashMPD) (float64, error) {
 	if mpd == nil {
@@ -519,28 +522,35 @@ func parseMPDDuration(mpd *dashMPD) (float64, error) {
 	}
 	var total float64
 	if match[1] != "" {
-		hours, err := strconv.ParseFloat(match[1], 64)
+		days, err := strconv.ParseFloat(match[1], 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse days: %w", err)
+		}
+		total += days * 24 * 3600
+	}
+	if match[2] != "" {
+		hours, err := strconv.ParseFloat(match[2], 64)
 		if err != nil {
 			return 0, fmt.Errorf("parse hours: %w", err)
 		}
 		total += hours * 3600
 	}
-	if match[2] != "" {
-		minutes, err := strconv.ParseFloat(match[2], 64)
+	if match[3] != "" {
+		minutes, err := strconv.ParseFloat(match[3], 64)
 		if err != nil {
 			return 0, fmt.Errorf("parse minutes: %w", err)
 		}
 		total += minutes * 60
 	}
-	if match[3] != "" {
-		seconds, err := strconv.ParseFloat(match[3], 64)
+	if match[4] != "" {
+		seconds, err := strconv.ParseFloat(match[4], 64)
 		if err != nil {
 			return 0, fmt.Errorf("parse seconds: %w", err)
 		}
 		total += seconds
 	}
 	if total <= 0 {
-		return 0, fmt.Errorf("mediaPresentationDuration missing")
+		return 0, fmt.Errorf("mediaPresentationDuration must be greater than 0")
 	}
 	return total, nil
 }

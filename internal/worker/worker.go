@@ -159,9 +159,11 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 	}()
 
-	workCtx := context.WithoutCancel(ctx)
+	workCtx, cancelWork := context.WithCancel(ctx)
+	defer cancelWork()
 	go func() {
 		<-ctx.Done()
+		cancelWork()
 		if w.requestShutdown() {
 			log.Info("shutdown requested")
 		}
