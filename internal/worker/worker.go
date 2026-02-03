@@ -195,13 +195,6 @@ func (w *Worker) Run(ctx context.Context) error {
 		case StateError:
 			return fmt.Errorf("worker in error state")
 		}
-
-		if w.isShutdownRequested() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := w.gracefulShutdown(shutdownCtx)
-			cancel()
-			return err
-		}
 	}
 }
 
