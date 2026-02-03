@@ -2,10 +2,15 @@ package manifest
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"path"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -146,6 +151,9 @@ func (p *Parser) extractLatestFromMediaPlaylist(mediapl *m3u8.MediaPlaylist, bas
 const maxIsEndListDepth = 4
 
 func (p *Parser) IsEndList(ctx context.Context, manifestURL string) (bool, error) {
+	if strings.Contains(manifestURL, ".mpd") || strings.Contains(manifestURL, "dash") {
+		return false, nil
+	}
 	return p.isEndListWithDepth(ctx, manifestURL, 0)
 }
 
@@ -202,9 +210,47 @@ func (p *Parser) isEndListWithDepth(ctx context.Context, manifestURL string, dep
 // Note: This is a simplified implementation. Full DASH support would require
 // a dedicated MPD parser library.
 func (p *Parser) getLatestDASHSegment(ctx context.Context, manifestURL string) (*Segment, error) {
-	// For now, return an error indicating DASH is not fully supported
-	// A full implementation would need to parse the MPD XML and extract segments
-	return nil, fmt.Errorf("DASH manifest parsing not yet implemented")
+	req, err := http.NewRequestWithContext(ctx, "GET", manifestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch manifest: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("manifest fetch failed with status %d", resp.StatusCode)
+	}
+
+	var mpd dashMPD
+	if err := xml.NewDecoder(resp.Body).Decode(&mpd); err != nil {
+		return nil, fmt.Errorf("decode mpd: %w", err)
+	}
+
+	segmentTemplate, representation, err := selectSegmentTemplate(&mpd)
+	if err != nil {
+		return nil, err
+	}
+
+	baseURL, err := resolveDASHBaseURL(&mpd, representation, manifestURL)
+	if err != nil {
+		return nil, err
+	}
+
+	segmentURL, duration, sequence, err := buildLatestDASHSegment(baseURL, segmentTemplate, representation, &mpd)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Segment{
+		URL:       segmentURL,
+		Duration:  duration,
+		Sequence:  sequence,
+		MediaType: "dash",
+	}, nil
 }
 
 // FetchSegment downloads a segment from the given URL.
@@ -241,5 +287,262 @@ func resolveURL(base *url.URL, ref string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return base.ResolveReference(refURL).String(), nil
+	resolved := base.ResolveReference(refURL)
+	resolved.Path = path.Clean(resolved.Path)
+	if !strings.HasSuffix(resolved.Path, "/") && strings.HasSuffix(ref, "/") {
+		resolved.Path += "/"
+	}
+	return resolved.String(), nil
+}
+
+type dashMPD struct {
+	XMLName                   xml.Name   `xml:"MPD"`
+	BaseURL                   string     `xml:"BaseURL"`
+	MediaPresentationDuration string     `xml:"mediaPresentationDuration,attr"`
+	Period                    dashPeriod `xml:"Period"`
+}
+
+type dashPeriod struct {
+	AdaptationSets []dashAdaptationSet `xml:"AdaptationSet"`
+}
+
+type dashAdaptationSet struct {
+	Representations []dashRepresentation `xml:"Representation"`
+}
+
+type dashRepresentation struct {
+	ID             string             `xml:"id,attr"`
+	Bandwidth      int64              `xml:"bandwidth,attr"`
+	BaseURL        string             `xml:"BaseURL"`
+	SegmentTemplate *dashSegmentTemplate `xml:"SegmentTemplate"`
+}
+
+type dashSegmentTemplate struct {
+	Timescale       int64                `xml:"timescale,attr"`
+	Duration        int64                `xml:"duration,attr"`
+	StartNumber     int64                `xml:"startNumber,attr"`
+	Media           string               `xml:"media,attr"`
+	SegmentTimeline *dashSegmentTimeline `xml:"SegmentTimeline"`
+}
+
+type dashSegmentTimeline struct {
+	Segments []dashSegmentTimelineS `xml:"S"`
+}
+
+type dashSegmentTimelineS struct {
+	T int64 `xml:"t,attr"`
+	D int64 `xml:"d,attr"`
+	R int64 `xml:"r,attr"`
+}
+
+func selectSegmentTemplate(mpd *dashMPD) (*dashSegmentTemplate, *dashRepresentation, error) {
+	if mpd == nil {
+		return nil, nil, fmt.Errorf("mpd is nil")
+	}
+	var chosen *dashRepresentation
+	var fallback *dashRepresentation
+	for i := range mpd.Period.AdaptationSets {
+		set := mpd.Period.AdaptationSets[i]
+		for j := range set.Representations {
+			rep := &set.Representations[j]
+			if rep.SegmentTemplate == nil {
+				continue
+			}
+			if fallback == nil {
+				fallback = rep
+			}
+			if chosen == nil || rep.Bandwidth > chosen.Bandwidth {
+				chosen = rep
+			}
+		}
+	}
+	if chosen == nil {
+		return nil, nil, fmt.Errorf("no representation with segment template")
+	}
+	if chosen.Bandwidth == 0 && fallback != nil {
+		chosen = fallback
+	}
+	if chosen.SegmentTemplate.Media == "" {
+		return nil, nil, fmt.Errorf("segment template media is empty")
+	}
+	return chosen.SegmentTemplate, chosen, nil
+}
+
+func resolveDASHBaseURL(mpd *dashMPD, representation *dashRepresentation, manifestURL string) (string, error) {
+	if representation != nil && representation.BaseURL != "" {
+		return representation.BaseURL, nil
+	}
+	if mpd != nil && mpd.BaseURL != "" {
+		return mpd.BaseURL, nil
+	}
+	base, err := url.Parse(manifestURL)
+	if err != nil {
+		return "", fmt.Errorf("parse manifest url: %w", err)
+	}
+	base.Path = path.Dir(base.Path) + "/"
+	base.RawQuery = ""
+	base.Fragment = ""
+	return base.String(), nil
+}
+
+func buildLatestDASHSegment(baseURL string, template *dashSegmentTemplate, representation *dashRepresentation, mpd *dashMPD) (string, float64, uint64, error) {
+	if template == nil {
+		return "", 0, 0, fmt.Errorf("segment template is nil")
+	}
+	timescale := template.Timescale
+	if timescale <= 0 {
+		timescale = 1
+	}
+	startNumber := template.StartNumber
+	if startNumber == 0 {
+		startNumber = 1
+	}
+
+	number := startNumber
+	var timeValue int64
+	var duration int64
+	var segmentsCount int64
+
+	if template.SegmentTimeline != nil && len(template.SegmentTimeline.Segments) > 0 {
+		var currentTime int64
+		for i, seg := range template.SegmentTimeline.Segments {
+			if seg.D == 0 {
+				return "", 0, 0, fmt.Errorf("segment timeline duration missing")
+			}
+			if seg.T != 0 || i == 0 {
+				currentTime = seg.T
+			}
+			repeat := seg.R
+			if repeat < 0 {
+				repeat = 0
+			}
+			duration = seg.D
+			timeValue = currentTime + duration*repeat
+			segmentsCount += 1 + repeat
+			currentTime += duration * (repeat + 1)
+		}
+	} else {
+		if template.Duration == 0 {
+			return "", 0, 0, fmt.Errorf("segment duration missing")
+		}
+		duration = template.Duration
+		segments, err := estimateSegmentCount(template, timescale, mpd)
+		if err != nil {
+			return "", 0, 0, err
+		}
+		segmentsCount = segments
+		timeValue = (segmentsCount - 1) * duration
+	}
+
+	if segmentsCount <= 0 {
+		segmentsCount = 1
+	}
+	number = startNumber + segmentsCount - 1
+	if number < 1 {
+		number = 1
+	}
+
+	urlStr, err := fillSegmentTemplate(baseURL, template.Media, representation, uint64(number), timeValue)
+	if err != nil {
+		return "", 0, 0, err
+	}
+
+	return urlStr, float64(duration) / float64(timescale), uint64(number), nil
+}
+
+func estimateSegmentCount(template *dashSegmentTemplate, timescale int64, mpd *dashMPD) (int64, error) {
+	if template == nil {
+		return 0, fmt.Errorf("segment template is nil")
+	}
+	if template.Duration <= 0 {
+		return 0, fmt.Errorf("segment duration missing")
+	}
+	if timescale <= 0 {
+		timescale = 1
+	}
+	totalSeconds, err := parseMPDDuration(mpd)
+	if err != nil {
+		return 0, err
+	}
+	segmentDuration := float64(template.Duration) / float64(timescale)
+	if segmentDuration <= 0 {
+		return 0, fmt.Errorf("segment duration missing")
+	}
+	segments := int64(math.Ceil(totalSeconds / segmentDuration))
+	if segments < 1 {
+		segments = 1
+	}
+	return segments, nil
+}
+
+var dashTemplatePattern = regexp.MustCompile(`\$(Number|Time|RepresentationID|Bandwidth)\$`)
+
+func fillSegmentTemplate(baseURL string, media string, representation *dashRepresentation, number uint64, timeValue int64) (string, error) {
+	replaced := dashTemplatePattern.ReplaceAllStringFunc(media, func(match string) string {
+		switch match {
+		case "$Number$":
+			return strconv.FormatUint(number, 10)
+		case "$Time$":
+			return strconv.FormatInt(timeValue, 10)
+		case "$RepresentationID$":
+			if representation != nil {
+				return representation.ID
+			}
+			return ""
+		case "$Bandwidth$":
+			if representation != nil {
+				return strconv.FormatInt(representation.Bandwidth, 10)
+			}
+			return ""
+		default:
+			return match
+		}
+	})
+	replaced = strings.TrimPrefix(replaced, "/")
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse base url: %w", err)
+	}
+	return resolveURL(base, replaced)
+}
+
+var mpdDurationPattern = regexp.MustCompile(`^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$`)
+
+func parseMPDDuration(mpd *dashMPD) (float64, error) {
+	if mpd == nil {
+		return 0, fmt.Errorf("mpd is nil")
+	}
+	if mpd.MediaPresentationDuration == "" {
+		return 0, fmt.Errorf("mediaPresentationDuration missing")
+	}
+	match := mpdDurationPattern.FindStringSubmatch(mpd.MediaPresentationDuration)
+	if match == nil {
+		return 0, fmt.Errorf("invalid mediaPresentationDuration")
+	}
+	var total float64
+	if match[1] != "" {
+		hours, err := strconv.ParseFloat(match[1], 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse hours: %w", err)
+		}
+		total += hours * 3600
+	}
+	if match[2] != "" {
+		minutes, err := strconv.ParseFloat(match[2], 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse minutes: %w", err)
+		}
+		total += minutes * 60
+	}
+	if match[3] != "" {
+		seconds, err := strconv.ParseFloat(match[3], 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse seconds: %w", err)
+		}
+		total += seconds
+	}
+	if total <= 0 {
+		return 0, fmt.Errorf("mediaPresentationDuration missing")
+	}
+	return total, nil
 }

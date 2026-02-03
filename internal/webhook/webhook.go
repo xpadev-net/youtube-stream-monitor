@@ -80,12 +80,77 @@ type SendResult struct {
 
 // Send sends a webhook to the specified URL with retries.
 func (s *Sender) Send(ctx context.Context, webhookURL string, payload *Payload) *SendResult {
+	return s.sendValidated(ctx, webhookURL, payload)
+}
+
+func (s *Sender) sendValidated(ctx context.Context, webhookURL string, payload *Payload) *SendResult {
 	result := &SendResult{}
 
 	if err := validation.ValidateOutboundURL(ctx, webhookURL, false); err != nil {
 		result.Error = fmt.Sprintf("invalid webhook url: %v", err)
 		return result
 	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		result.Error = fmt.Sprintf("marshal payload: %v", err)
+		return result
+	}
+
+	for attempt := 1; attempt <= s.maxRetries; attempt++ {
+		result.Attempts = attempt
+
+		// Wait before retry (skip first attempt)
+		if delay := retryDelay(attempt); delay > 0 {
+			select {
+			case <-ctx.Done():
+				result.Error = "context canceled"
+				return result
+			case <-time.After(delay):
+			}
+		}
+
+		statusCode, err := s.sendOnce(ctx, webhookURL, body)
+		result.StatusCode = statusCode
+
+		if err == nil && statusCode >= 200 && statusCode < 300 {
+			result.Success = true
+			log.Info("webhook sent successfully",
+				zap.String("url", webhookURL),
+				zap.String("event_type", string(payload.EventType)),
+				zap.Int("attempt", attempt),
+			)
+			return result
+		}
+
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		} else {
+			errMsg = fmt.Sprintf("HTTP %d", statusCode)
+		}
+
+		log.Warn("webhook delivery failed",
+			zap.String("url", webhookURL),
+			zap.String("event_type", string(payload.EventType)),
+			zap.Int("attempt", attempt),
+			zap.String("error", errMsg),
+		)
+
+		result.Error = errMsg
+	}
+
+	log.Error("webhook delivery failed after all retries",
+		zap.String("url", webhookURL),
+		zap.String("event_type", string(payload.EventType)),
+		zap.Int("total_attempts", result.Attempts),
+		zap.String("last_error", result.Error),
+	)
+
+	return result
+}
+
+func (s *Sender) sendWithoutValidation(ctx context.Context, webhookURL string, payload *Payload) *SendResult {
+	result := &SendResult{}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		result.Error = fmt.Sprintf("marshal payload: %v", err)

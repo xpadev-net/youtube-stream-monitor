@@ -130,6 +130,7 @@ func main() {
 	internal.Use(httpapi.InternalAPIKeyAuth(cfg.InternalAPIKey))
 	{
 		internal.PUT("/monitors/:monitor_id/status", handler.UpdateMonitorStatus)
+		internal.POST("/monitors/:monitor_id/terminate", handler.TerminateMonitor)
 	}
 
 	// Create HTTP server

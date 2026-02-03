@@ -852,6 +852,7 @@ WorkerはAPI Gatewayの内部APIを通じて状態を報告する。
 
 ```
 PUT /internal/v1/monitors/{monitor_id}/status
+POST /internal/v1/monitors/{monitor_id}/terminate
 ```
 
 #### リクエストボディ
@@ -868,6 +869,14 @@ PUT /internal/v1/monitors/{monitor_id}/status
     "blackout_events": 0,
     "silence_events": 1
   }
+}
+```
+
+Webhook送信が全リトライ失敗した場合は、Workerが監視削除を要求する。
+
+```json
+{
+  "reason": "webhook_delivery_failed"
 }
 ```
 

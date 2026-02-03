@@ -431,6 +431,11 @@ type UpdateStatusRequest struct {
 	} `json:"statistics,omitempty"`
 }
 
+// TerminateMonitorRequest represents the request body for terminating a monitor (internal API).
+type TerminateMonitorRequest struct {
+	Reason string `json:"reason"`
+}
+
 // UpdateMonitorStatus handles PUT /internal/v1/monitors/:monitor_id/status
 func (h *Handler) UpdateMonitorStatus(c *gin.Context) {
 	monitorID := c.Param("monitor_id")
@@ -535,6 +540,53 @@ func (h *Handler) UpdateMonitorStatus(c *gin.Context) {
 	httpapi.RespondOK(c, gin.H{
 		"monitor_id": monitorID,
 		"status":     req.Status,
+	})
+}
+
+// TerminateMonitor handles POST /internal/v1/monitors/:monitor_id/terminate
+func (h *Handler) TerminateMonitor(c *gin.Context) {
+	monitorID := c.Param("monitor_id")
+	if !ids.IsValidMonitorID(monitorID) {
+		httpapi.RespondNotFound(c, "Monitor not found")
+		return
+	}
+
+	var req TerminateMonitorRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpapi.RespondValidationError(c, "Invalid request body: "+err.Error())
+		return
+	}
+
+	if err := h.repo.Delete(c.Request.Context(), monitorID); err != nil {
+		if errors.Is(err, db.ErrMonitorNotFound) {
+			httpapi.RespondOK(c, gin.H{
+				"monitor_id": monitorID,
+				"deleted":    false,
+			})
+			return
+		}
+		log.Error("failed to delete monitor", zap.Error(err))
+		httpapi.RespondInternalError(c, "Failed to delete monitor")
+		return
+	}
+
+	if h.reconciler != nil {
+		if err := h.reconciler.DeleteMonitorPod(c.Request.Context(), monitorID); err != nil {
+			log.Error("failed to delete worker pod",
+				zap.String("monitor_id", monitorID),
+				zap.Error(err),
+			)
+		}
+	}
+
+	log.Info("monitor terminated",
+		zap.String("monitor_id", monitorID),
+		zap.String("reason", req.Reason),
+	)
+
+	httpapi.RespondOK(c, gin.H{
+		"monitor_id": monitorID,
+		"deleted":    true,
 	})
 }
 
