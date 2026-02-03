@@ -159,7 +159,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 	}()
 
-	workCtx := context.Background()
+	workCtx := context.WithoutCancel(ctx)
 	go func() {
 		<-ctx.Done()
 		if w.requestShutdown() {
@@ -179,13 +179,13 @@ func (w *Worker) Run(ctx context.Context) error {
 		case StateWaiting:
 			if err := w.waitingMode(workCtx); err != nil {
 				log.Error("waiting mode error", zap.Error(err))
-				w.transitionToError(ctx, err.Error())
+				w.transitionToError(workCtx, err.Error())
 				return err
 			}
 		case StateMonitoring:
 			if err := w.monitoringMode(workCtx); err != nil {
 				log.Error("monitoring mode error", zap.Error(err))
-				w.transitionToError(ctx, err.Error())
+				w.transitionToError(workCtx, err.Error())
 				return err
 			}
 		case StateCompleted:

@@ -58,7 +58,7 @@ func (p *Parser) GetLatestSegment(ctx context.Context, manifestURL string) (*Seg
 	if strings.Contains(manifestURL, ".m3u8") || strings.Contains(manifestURL, "hls") {
 		return p.getLatestHLSSegment(ctx, manifestURL)
 	}
-	if strings.Contains(manifestURL, ".mpd") || strings.Contains(manifestURL, "dash") {
+	if isDASHManifestURL(manifestURL) {
 		return p.getLatestDASHSegment(ctx, manifestURL)
 	}
 
@@ -151,7 +151,7 @@ func (p *Parser) extractLatestFromMediaPlaylist(mediapl *m3u8.MediaPlaylist, bas
 const maxIsEndListDepth = 4
 
 func (p *Parser) IsEndList(ctx context.Context, manifestURL string) (bool, error) {
-	if strings.Contains(manifestURL, ".mpd") || strings.Contains(manifestURL, "dash") {
+	if isDASHManifestURL(manifestURL) {
 		return false, nil
 	}
 	return p.isEndListWithDepth(ctx, manifestURL, 0)
@@ -287,11 +287,17 @@ func resolveURL(base *url.URL, ref string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resolved := base.ResolveReference(refURL)
-	resolved.Path = path.Clean(resolved.Path)
-	if !strings.HasSuffix(resolved.Path, "/") && strings.HasSuffix(ref, "/") {
-		resolved.Path += "/"
+	if refURL.IsAbs() {
+		return refURL.String(), nil
 	}
+	resolved := *base
+	if strings.HasPrefix(ref, "/") {
+		resolved.Path = path.Clean(refURL.Path)
+	} else {
+		resolved.Path = path.Join(path.Dir(base.Path), refURL.Path)
+	}
+	resolved.RawQuery = refURL.RawQuery
+	resolved.Fragment = refURL.Fragment
 	return resolved.String(), nil
 }
 
@@ -340,16 +346,12 @@ func selectSegmentTemplate(mpd *dashMPD) (*dashSegmentTemplate, *dashRepresentat
 		return nil, nil, fmt.Errorf("mpd is nil")
 	}
 	var chosen *dashRepresentation
-	var fallback *dashRepresentation
 	for i := range mpd.Period.AdaptationSets {
 		set := mpd.Period.AdaptationSets[i]
 		for j := range set.Representations {
 			rep := &set.Representations[j]
 			if rep.SegmentTemplate == nil {
 				continue
-			}
-			if fallback == nil {
-				fallback = rep
 			}
 			if chosen == nil || rep.Bandwidth > chosen.Bandwidth {
 				chosen = rep
@@ -358,9 +360,6 @@ func selectSegmentTemplate(mpd *dashMPD) (*dashSegmentTemplate, *dashRepresentat
 	}
 	if chosen == nil {
 		return nil, nil, fmt.Errorf("no representation with segment template")
-	}
-	if chosen.Bandwidth == 0 && fallback != nil {
-		chosen = fallback
 	}
 	if chosen.SegmentTemplate.Media == "" {
 		return nil, nil, fmt.Errorf("segment template media is empty")
@@ -498,7 +497,6 @@ func fillSegmentTemplate(baseURL string, media string, representation *dashRepre
 			return match
 		}
 	})
-	replaced = strings.TrimPrefix(replaced, "/")
 	base, err := url.Parse(baseURL)
 	if err != nil {
 		return "", fmt.Errorf("parse base url: %w", err)
@@ -545,4 +543,12 @@ func parseMPDDuration(mpd *dashMPD) (float64, error) {
 		return 0, fmt.Errorf("mediaPresentationDuration missing")
 	}
 	return total, nil
+}
+
+func isDASHManifestURL(manifestURL string) bool {
+	parsed, err := url.Parse(manifestURL)
+	if err != nil {
+		return strings.HasSuffix(strings.ToLower(manifestURL), ".mpd")
+	}
+	return strings.HasSuffix(strings.ToLower(parsed.Path), ".mpd")
 }
