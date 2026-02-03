@@ -98,7 +98,7 @@ This repository includes `.agent/PLANS.md`, and this document must be maintained
 
 ## Concrete Steps
 
-作業ディレクトリは `/Users/xpadev/IdeaProjects/youtube-stream-tracker` とします。まず対象ファイルを確認します。
+作業ディレクトリは `/github/xpadev-net/youtube-stream-monitor` とします。まず対象ファイルを確認します。
 
     pwd
     sed -n '1,240p' internal/worker/worker.go
