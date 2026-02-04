@@ -124,6 +124,7 @@ func (s *Sender) sendWithRetries(ctx context.Context, webhookURL string, payload
 
 		if err == nil && statusCode >= 200 && statusCode < 300 {
 			result.Success = true
+			result.Error = ""
 			log.Info("webhook sent successfully",
 				zap.String("url", webhookURL),
 				zap.String("event_type", string(payload.EventType)),

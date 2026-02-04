@@ -291,6 +291,15 @@ func resolveURL(base *url.URL, ref string) (string, error) {
 		return refURL.String(), nil
 	}
 	resolved := *base
+	if refURL.Path == "" {
+		if refURL.RawQuery != "" || strings.HasPrefix(ref, "?") {
+			resolved.RawQuery = refURL.RawQuery
+		}
+		if refURL.Fragment != "" || strings.Contains(ref, "#") {
+			resolved.Fragment = refURL.Fragment
+		}
+		return resolved.String(), nil
+	}
 	if strings.HasPrefix(ref, "/") {
 		resolved.Path = refURL.Path
 	} else {
@@ -379,7 +388,9 @@ func resolveDASHBaseURL(mpd *dashMPD, representation *dashRepresentation, manife
 		return resolveRelativeBaseURL(base, mpd.BaseURL)
 	}
 	base.Path = path.Dir(base.Path)
-	if base.Path != "/" && !strings.HasSuffix(base.Path, "/") {
+	if base.Path == "/" {
+		// Root path already has trailing slash.
+	} else if !strings.HasSuffix(base.Path, "/") {
 		base.Path += "/"
 	}
 	base.RawQuery = ""

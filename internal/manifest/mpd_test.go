@@ -73,6 +73,9 @@ func TestGetLatestSegmentDASHDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetLatestSegment error: %v", err)
 	}
+	if segment.MediaType != "dash" {
+		t.Fatalf("MediaType = %s, want dash", segment.MediaType)
+	}
 	if segment.URL != server.URL+"/seg_4.m4s" {
 		t.Fatalf("segment URL = %s, want %s", segment.URL, server.URL+"/seg_4.m4s")
 	}
