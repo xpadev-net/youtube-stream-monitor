@@ -462,8 +462,9 @@ func (w *Worker) analyzeLatestSegment(ctx context.Context) error {
 		}
 	}()
 
-	// Analyze segment
-	result, err := w.analyzer.AnalyzeSegment(ctx, segmentPath)
+	// Analyze segment; allow in-flight ffmpeg work to finish even if shutdown is requested.
+	analysisCtx := context.WithoutCancel(ctx)
+	result, err := w.analyzer.AnalyzeSegment(analysisCtx, segmentPath)
 	if err != nil {
 		return fmt.Errorf("analyze segment: %w", err)
 	}

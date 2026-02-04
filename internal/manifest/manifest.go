@@ -518,6 +518,8 @@ func fillSegmentTemplate(baseURL string, media string, representation *dashRepre
 	return resolveURL(base, replaced)
 }
 
+// Supported subset: days + integer hours/minutes + fractional seconds.
+// Weeks (PnW) and fractional hours/minutes are not supported.
 var mpdDurationPattern = regexp.MustCompile(`^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$`)
 var mpdDurationDaysOnlyPattern = regexp.MustCompile(`^P(\d+)D$`)
 
@@ -528,12 +530,8 @@ func parseMPDDuration(mpd *dashMPD) (float64, error) {
 	if mpd.MediaPresentationDuration == "" {
 		return 0, fmt.Errorf("mediaPresentationDuration missing")
 	}
-	match := mpdDurationPattern.FindStringSubmatch(mpd.MediaPresentationDuration)
-	if match == nil {
-		daysOnly := mpdDurationDaysOnlyPattern.FindStringSubmatch(mpd.MediaPresentationDuration)
-		if daysOnly == nil {
-			return 0, fmt.Errorf("invalid mediaPresentationDuration")
-		}
+	daysOnly := mpdDurationDaysOnlyPattern.FindStringSubmatch(mpd.MediaPresentationDuration)
+	if daysOnly != nil {
 		days, err := strconv.ParseFloat(daysOnly[1], 64)
 		if err != nil {
 			return 0, fmt.Errorf("parse days: %w", err)
@@ -543,6 +541,10 @@ func parseMPDDuration(mpd *dashMPD) (float64, error) {
 			return 0, fmt.Errorf("parsed duration is zero or negative")
 		}
 		return total, nil
+	}
+	match := mpdDurationPattern.FindStringSubmatch(mpd.MediaPresentationDuration)
+	if match == nil {
+		return 0, fmt.Errorf("invalid mediaPresentationDuration")
 	}
 	var total float64
 	if match[1] != "" {
