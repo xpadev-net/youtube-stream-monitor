@@ -563,6 +563,14 @@ func (h *Handler) TerminateMonitor(c *gin.Context) {
 				zap.String("monitor_id", monitorID),
 				zap.String("reason", req.Reason),
 			)
+			if h.reconciler != nil {
+				if err := h.reconciler.DeleteMonitorPod(c.Request.Context(), monitorID); err != nil {
+					log.Error("failed to delete worker pod",
+						zap.String("monitor_id", monitorID),
+						zap.Error(err),
+					)
+				}
+			}
 			httpapi.RespondOK(c, gin.H{
 				"monitor_id": monitorID,
 				"deleted":    false,

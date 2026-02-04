@@ -55,11 +55,11 @@ func NewParserWithLimit(timeout time.Duration, maxSegmentBytes int64) *Parser {
 // GetLatestSegment retrieves the latest segment from the manifest URL.
 func (p *Parser) GetLatestSegment(ctx context.Context, manifestURL string) (*Segment, error) {
 	// Determine manifest type from URL
-	if strings.Contains(manifestURL, ".m3u8") || strings.Contains(manifestURL, "hls") {
-		return p.getLatestHLSSegment(ctx, manifestURL)
-	}
 	if isDASHManifestURL(manifestURL) {
 		return p.getLatestDASHSegment(ctx, manifestURL)
+	}
+	if strings.Contains(strings.ToLower(manifestURL), ".m3u8") {
+		return p.getLatestHLSSegment(ctx, manifestURL)
 	}
 
 	// Default to HLS
@@ -368,23 +368,31 @@ func selectSegmentTemplate(mpd *dashMPD) (*dashSegmentTemplate, *dashRepresentat
 }
 
 func resolveDASHBaseURL(mpd *dashMPD, representation *dashRepresentation, manifestURL string) (string, error) {
-	if representation != nil && representation.BaseURL != "" {
-		return representation.BaseURL, nil
-	}
-	if mpd != nil && mpd.BaseURL != "" {
-		return mpd.BaseURL, nil
-	}
 	base, err := url.Parse(manifestURL)
 	if err != nil {
 		return "", fmt.Errorf("parse manifest url: %w", err)
 	}
+	if representation != nil && representation.BaseURL != "" {
+		return resolveRelativeBaseURL(base, representation.BaseURL)
+	}
+	if mpd != nil && mpd.BaseURL != "" {
+		return resolveRelativeBaseURL(base, mpd.BaseURL)
+	}
 	base.Path = path.Dir(base.Path)
-	if !strings.HasSuffix(base.Path, "/") {
+	if base.Path != "/" && !strings.HasSuffix(base.Path, "/") {
 		base.Path += "/"
 	}
 	base.RawQuery = ""
 	base.Fragment = ""
 	return base.String(), nil
+}
+
+func resolveRelativeBaseURL(base *url.URL, baseURL string) (string, error) {
+	ref, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse base url: %w", err)
+	}
+	return base.ResolveReference(ref).String(), nil
 }
 
 func buildLatestDASHSegment(baseURL string, template *dashSegmentTemplate, representation *dashRepresentation, mpd *dashMPD) (string, float64, uint64, error) {
@@ -511,6 +519,7 @@ func fillSegmentTemplate(baseURL string, media string, representation *dashRepre
 }
 
 var mpdDurationPattern = regexp.MustCompile(`^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$`)
+var mpdDurationDaysOnlyPattern = regexp.MustCompile(`^P(\d+)D$`)
 
 func parseMPDDuration(mpd *dashMPD) (float64, error) {
 	if mpd == nil {
@@ -521,7 +530,19 @@ func parseMPDDuration(mpd *dashMPD) (float64, error) {
 	}
 	match := mpdDurationPattern.FindStringSubmatch(mpd.MediaPresentationDuration)
 	if match == nil {
-		return 0, fmt.Errorf("invalid mediaPresentationDuration")
+		daysOnly := mpdDurationDaysOnlyPattern.FindStringSubmatch(mpd.MediaPresentationDuration)
+		if daysOnly == nil {
+			return 0, fmt.Errorf("invalid mediaPresentationDuration")
+		}
+		days, err := strconv.ParseFloat(daysOnly[1], 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse days: %w", err)
+		}
+		total := days * 24 * 3600
+		if total <= 0 {
+			return 0, fmt.Errorf("parsed duration is zero or negative")
+		}
+		return total, nil
 	}
 	var total float64
 	if match[1] != "" {

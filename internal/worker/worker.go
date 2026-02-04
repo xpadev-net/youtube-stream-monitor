@@ -667,6 +667,14 @@ func (w *Worker) sendWebhook(ctx context.Context, eventType webhook.EventType, d
 
 	result := w.webhookSender.Send(ctx, w.cfg.WebhookURL, payload)
 	if !result.Success {
+		if w.isShutdownRequested() || ctx.Err() != nil {
+			log.Warn("webhook delivery failed during shutdown",
+				zap.String("event_type", string(eventType)),
+				zap.Int("attempts", result.Attempts),
+				zap.String("error", result.Error),
+			)
+			return
+		}
 		log.Error("webhook delivery failed",
 			zap.String("event_type", string(eventType)),
 			zap.Int("attempts", result.Attempts),
@@ -677,7 +685,9 @@ func (w *Worker) sendWebhook(ctx context.Context, eventType webhook.EventType, d
 		// (don't send monitor.error event)
 		w.setState(StateError)
 		if w.callbackClient != nil {
-			if err := w.callbackClient.TerminateMonitor(ctx, w.cfg.MonitorID, "webhook_delivery_failed"); err != nil {
+			terminateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := w.callbackClient.TerminateMonitor(terminateCtx, w.cfg.MonitorID, "webhook_delivery_failed"); err != nil {
 				log.Error("failed to request monitor termination", zap.Error(err))
 			}
 		}
