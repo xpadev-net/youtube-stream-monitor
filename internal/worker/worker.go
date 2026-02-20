@@ -49,10 +49,20 @@ type SegmentAnalyzer interface {
 	AnalyzeSegment(ctx context.Context, segmentPath string) (*ffmpeg.AnalysisResult, error)
 }
 
+// WebhookEventReport contains the result of a webhook delivery for audit logging.
+type WebhookEventReport struct {
+	EventType       string                 `json:"event_type"`
+	WebhookStatus   string                 `json:"webhook_status"`
+	WebhookAttempts int                    `json:"webhook_attempts"`
+	WebhookError    *string                `json:"webhook_error,omitempty"`
+	Payload         map[string]interface{} `json:"payload,omitempty"`
+}
+
 // CallbackReporter provides gateway internal API operations.
 type CallbackReporter interface {
 	ReportStatus(ctx context.Context, monitorID string, status db.MonitorStatus, update *StatusUpdate) error
 	TerminateMonitor(ctx context.Context, monitorID string, reason string) error
+	ReportWebhookEvent(ctx context.Context, monitorID string, event *WebhookEventReport) error
 }
 
 // YtDlpClient provides stream status and manifest lookup.
@@ -667,6 +677,29 @@ func (w *Worker) sendWebhook(ctx context.Context, eventType webhook.EventType, d
 	}
 
 	result := w.webhookSender.Send(ctx, w.cfg.WebhookURL, payload)
+
+	// Report webhook event to gateway for audit logging (best-effort)
+	if w.callbackClient != nil {
+		report := &WebhookEventReport{
+			EventType:       string(eventType),
+			WebhookStatus:   "sent",
+			WebhookAttempts: result.Attempts,
+			Payload:         data,
+		}
+		if !result.Success {
+			report.WebhookStatus = "failed"
+			errStr := result.Error
+			report.WebhookError = &errStr
+		}
+		go func() {
+			reportCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := w.callbackClient.ReportWebhookEvent(reportCtx, w.cfg.MonitorID, report); err != nil {
+				log.Warn("failed to report webhook event", zap.Error(err))
+			}
+		}()
+	}
+
 	if !result.Success {
 		if w.isShutdownRequested() || ctx.Err() != nil {
 			log.Warn("webhook delivery failed during shutdown",

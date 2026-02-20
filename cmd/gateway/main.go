@@ -101,6 +101,14 @@ func main() {
 		}
 	}
 
+	// Start periodic reconciliation if interval is configured
+	var reconcileCancel context.CancelFunc
+	if cfg.ReconcileInterval > 0 {
+		var reconcileCtx context.Context
+		reconcileCtx, reconcileCancel = context.WithCancel(context.Background())
+		go reconciler.RunPeriodic(reconcileCtx, cfg.ReconcileInterval)
+	}
+
 	// Set Gin mode based on environment
 	if cfg.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -131,6 +139,7 @@ func main() {
 	{
 		internal.PUT("/monitors/:monitor_id/status", handler.UpdateMonitorStatus)
 		internal.POST("/monitors/:monitor_id/terminate", handler.TerminateMonitor)
+		internal.POST("/monitors/:monitor_id/events", handler.RecordWebhookEvent)
 	}
 
 	// Create HTTP server
@@ -155,6 +164,11 @@ func main() {
 	<-quit
 
 	log.Info("shutting down server")
+
+	// Stop periodic reconciliation
+	if reconcileCancel != nil {
+		reconcileCancel()
+	}
 
 	// Graceful shutdown
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)

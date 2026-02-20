@@ -152,3 +152,36 @@ func (c *CallbackClient) TerminateMonitor(ctx context.Context, monitorID string,
 
 	return nil
 }
+
+// ReportWebhookEvent reports a webhook delivery result to the gateway for audit logging.
+func (c *CallbackClient) ReportWebhookEvent(ctx context.Context, monitorID string, event *WebhookEventReport) error {
+	if err := validation.ValidateOutboundURL(ctx, c.baseURL, true); err != nil {
+		return fmt.Errorf("invalid internal callback url: %w", err)
+	}
+	url := fmt.Sprintf("%s/internal/v1/monitors/%s/events", c.baseURL, monitorID)
+
+	body, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Internal-API-Key", c.internalAPIKey)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("gateway returned status %d", resp.StatusCode)
+	}
+
+	return nil
+}

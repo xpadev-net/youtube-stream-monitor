@@ -29,14 +29,15 @@ type GatewayConfig struct {
 	ReconcileWebhookURL               string
 
 	// Kubernetes
-	Namespace        string
-	WorkerImage      string
-	WorkerImageTag   string
-	InCluster        bool
-	KubeConfigPath   string
-	MaxMonitors      int
-	ReconcileOnBoot  bool
-	ReconcileTimeout time.Duration
+	Namespace         string
+	WorkerImage       string
+	WorkerImageTag    string
+	InCluster         bool
+	KubeConfigPath    string
+	MaxMonitors       int
+	ReconcileOnBoot   bool
+	ReconcileTimeout  time.Duration
+	ReconcileInterval time.Duration
 
 	// Timeouts
 	ReadTimeout     time.Duration
@@ -111,6 +112,7 @@ func LoadGatewayConfig() (*GatewayConfig, error) {
 		MaxMonitors:                       getEnvInt("MAX_MONITORS", 50),
 		ReconcileOnBoot:                   getEnvBool("RECONCILE_ON_BOOT", true),
 		ReconcileTimeout:                  reconcileTimeout,
+		ReconcileInterval:                 getEnvDuration("RECONCILE_INTERVAL", 5*time.Minute),
 		ReadTimeout:                       getEnvDuration("READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:                      getEnvDuration("WRITE_TIMEOUT", 30*time.Second),
 		ShutdownTimeout:                   getEnvDuration("SHUTDOWN_TIMEOUT", 30*time.Second),

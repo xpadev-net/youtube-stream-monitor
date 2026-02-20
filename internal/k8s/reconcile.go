@@ -46,6 +46,35 @@ func NewReconciler(k8sClient *Client, repo *db.MonitorRepository, webhookSender 
 	}
 }
 
+// RunPeriodic runs reconciliation on a periodic interval until the context is cancelled.
+func (r *Reconciler) RunPeriodic(ctx context.Context, interval time.Duration) {
+	log.Info("starting periodic reconciliation", zap.Duration("interval", interval))
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("periodic reconciliation stopped")
+			return
+		case <-ticker.C:
+			result, err := r.ReconcileStartup(ctx)
+			if err != nil {
+				log.Error("periodic reconciliation failed", zap.Error(err))
+				continue
+			}
+			if result.MissingPods > 0 || result.ZombiePods > 0 || result.OrphanedPods > 0 || len(result.Errors) > 0 {
+				log.Info("periodic reconciliation found issues",
+					zap.Int("missing_pods", result.MissingPods),
+					zap.Int("zombie_pods", result.ZombiePods),
+					zap.Int("orphaned_pods", result.OrphanedPods),
+					zap.Int("errors", len(result.Errors)),
+				)
+			}
+		}
+	}
+}
+
 // ReconcileStartup performs reconciliation at Gateway startup.
 // This is idempotent and safe to run multiple times.
 func (r *Reconciler) ReconcileStartup(ctx context.Context) (*ReconcileResult, error) {

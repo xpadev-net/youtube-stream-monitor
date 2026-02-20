@@ -602,6 +602,77 @@ func (h *Handler) TerminateMonitor(c *gin.Context) {
 	})
 }
 
+// RecordWebhookEventRequest represents the request body for recording a webhook event (internal API).
+type RecordWebhookEventRequest struct {
+	EventType       string                 `json:"event_type" binding:"required"`
+	WebhookStatus   string                 `json:"webhook_status" binding:"required"`
+	WebhookAttempts int                    `json:"webhook_attempts"`
+	WebhookError    *string                `json:"webhook_error,omitempty"`
+	Payload         map[string]interface{} `json:"payload,omitempty"`
+}
+
+// RecordWebhookEvent handles POST /internal/v1/monitors/:monitor_id/events
+func (h *Handler) RecordWebhookEvent(c *gin.Context) {
+	monitorID := c.Param("monitor_id")
+	if !ids.IsValidMonitorID(monitorID) {
+		httpapi.RespondNotFound(c, "Monitor not found")
+		return
+	}
+
+	var req RecordWebhookEventRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpapi.RespondValidationError(c, "Invalid request body: "+err.Error())
+		return
+	}
+
+	// Validate webhook_status
+	whStatus := db.WebhookStatus(req.WebhookStatus)
+	if whStatus != db.WebhookStatusPending && whStatus != db.WebhookStatusSent && whStatus != db.WebhookStatusFailed {
+		httpapi.RespondValidationError(c, "invalid webhook_status: "+req.WebhookStatus)
+		return
+	}
+
+	// Build payload JSON
+	var payloadJSON json.RawMessage
+	if req.Payload != nil {
+		b, err := json.Marshal(req.Payload)
+		if err != nil {
+			httpapi.RespondValidationError(c, "failed to encode payload")
+			return
+		}
+		payloadJSON = b
+	} else {
+		payloadJSON = json.RawMessage("{}")
+	}
+
+	var sentAt *time.Time
+	if whStatus == db.WebhookStatusSent {
+		now := time.Now()
+		sentAt = &now
+	}
+
+	event := &db.MonitorEvent{
+		MonitorID:        monitorID,
+		EventType:        req.EventType,
+		Payload:          payloadJSON,
+		WebhookStatus:    whStatus,
+		WebhookAttempts:  req.WebhookAttempts,
+		WebhookLastError: req.WebhookError,
+		SentAt:           sentAt,
+	}
+
+	if err := h.repo.CreateEvent(c.Request.Context(), event); err != nil {
+		log.Error("failed to create webhook event", zap.Error(err))
+		httpapi.RespondInternalError(c, "Failed to record webhook event")
+		return
+	}
+
+	httpapi.RespondCreated(c, gin.H{
+		"event_id":   event.ID.String(),
+		"monitor_id": monitorID,
+	})
+}
+
 func isValidYouTubeWatchURL(urlStr string) bool {
 	if !youtubeWatchURLRegex.MatchString(urlStr) {
 		return false
