@@ -684,12 +684,12 @@ func (w *Worker) sendWebhook(ctx context.Context, eventType webhook.EventType, d
 		dataCopy := copyMap(data)
 		report := &WebhookEventReport{
 			EventType:       string(eventType),
-			WebhookStatus:   "sent",
+			WebhookStatus:   string(db.WebhookStatusSent),
 			WebhookAttempts: result.Attempts,
 			Payload:         dataCopy,
 		}
 		if !result.Success {
-			report.WebhookStatus = "failed"
+			report.WebhookStatus = string(db.WebhookStatusFailed)
 			errStr := result.Error
 			report.WebhookError = &errStr
 		}
