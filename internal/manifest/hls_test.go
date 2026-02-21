@@ -5,13 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 func newTestParser() *Parser {
-	parser := NewParserWithLimit(2*time.Second, 1024)
-	parser.httpClient = http.DefaultClient
-	return parser
+	return NewParserWithHTTPClient(http.DefaultClient, 1024)
 }
 
 func TestGetLatestSegmentHLSMediaPlaylist(t *testing.T) {

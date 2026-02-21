@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 func TestGetLatestSegmentDASHSegmentTimeline(t *testing.T) {
@@ -30,9 +29,7 @@ func TestGetLatestSegmentDASHSegmentTimeline(t *testing.T) {
 	}))
 	defer server.Close()
 
-	parser := NewParserWithLimit(2*time.Second, 1024)
-	// Use DefaultClient to allow httptest server (localhost) requests in tests.
-	parser.httpClient = http.DefaultClient
+	parser := newTestParser()
 	segment, err := parser.GetLatestSegment(context.Background(), server.URL+"/manifest.mpd")
 	if err != nil {
 		t.Fatalf("GetLatestSegment error: %v", err)
@@ -66,9 +63,7 @@ func TestGetLatestSegmentDASHDuration(t *testing.T) {
 	}))
 	defer server.Close()
 
-	parser := NewParserWithLimit(2*time.Second, 1024)
-	// Use DefaultClient to allow httptest server (localhost) requests in tests.
-	parser.httpClient = http.DefaultClient
+	parser := newTestParser()
 	segment, err := parser.GetLatestSegment(context.Background(), server.URL+"/manifest.mpd")
 	if err != nil {
 		t.Fatalf("GetLatestSegment error: %v", err)

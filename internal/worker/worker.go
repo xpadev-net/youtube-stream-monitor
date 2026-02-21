@@ -879,11 +879,13 @@ func deepCopyMap(m map[string]interface{}) map[string]interface{} {
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
-		return nil
+		log.Warn("deepCopyMap marshal failed, using original map", zap.Error(err))
+		return m
 	}
 	var cp map[string]interface{}
 	if err := json.Unmarshal(b, &cp); err != nil {
-		return nil
+		log.Warn("deepCopyMap unmarshal failed, using original map", zap.Error(err))
+		return m
 	}
 	return cp
 }
