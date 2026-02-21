@@ -39,6 +39,10 @@ type GatewayConfig struct {
 	ReconcileTimeout  time.Duration
 	ReconcileInterval time.Duration
 
+	// Cleanup
+	MonitorRetentionPeriod time.Duration
+	CleanupInterval        time.Duration
+
 	// Timeouts
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
@@ -113,6 +117,8 @@ func LoadGatewayConfig() (*GatewayConfig, error) {
 		ReconcileOnBoot:                   getEnvBool("RECONCILE_ON_BOOT", true),
 		ReconcileTimeout:                  reconcileTimeout,
 		ReconcileInterval:                 getEnvDuration("RECONCILE_INTERVAL", 5*time.Minute),
+		MonitorRetentionPeriod:            getEnvDuration("MONITOR_RETENTION_PERIOD", 168*time.Hour),
+		CleanupInterval:                   getEnvDuration("CLEANUP_INTERVAL", time.Hour),
 		ReadTimeout:                       getEnvDuration("READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:                      getEnvDuration("WRITE_TIMEOUT", 30*time.Second),
 		ShutdownTimeout:                   getEnvDuration("SHUTDOWN_TIMEOUT", 30*time.Second),

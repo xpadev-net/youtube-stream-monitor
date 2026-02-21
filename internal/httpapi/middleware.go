@@ -67,13 +67,16 @@ func InternalAPIKeyAuth(internalAPIKey string) gin.HandlerFunc {
 	}
 }
 
+const defaultMaxVisitors = 10000
+
 type rateLimiter struct {
-	limit    rate.Limit
-	burst    int
-	window   time.Duration
-	mu       sync.Mutex
-	visitors map[string]*rate.Limiter
-	lastSeen map[string]time.Time
+	limit       rate.Limit
+	burst       int
+	window      time.Duration
+	maxVisitors int
+	mu          sync.Mutex
+	visitors    map[string]*rate.Limiter
+	lastSeen    map[string]time.Time
 }
 
 type limiterRegistry struct {
@@ -90,11 +93,12 @@ func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 		interval = time.Second
 	}
 	return &rateLimiter{
-		limit:    rate.Every(interval),
-		burst:    limit,
-		window:   window,
-		visitors: make(map[string]*rate.Limiter),
-		lastSeen: make(map[string]time.Time),
+		limit:       rate.Every(interval),
+		burst:       limit,
+		window:      window,
+		maxVisitors: defaultMaxVisitors,
+		visitors:    make(map[string]*rate.Limiter),
+		lastSeen:    make(map[string]time.Time),
 	}
 }
 
@@ -117,6 +121,21 @@ func (l *rateLimiter) getLimiter(key string) *rate.Limiter {
 
 	limiter, exists := l.visitors[key]
 	if !exists {
+		if len(l.visitors) >= l.maxVisitors {
+			// Evict the oldest entry to make room
+			var oldestKey string
+			var oldestTime time.Time
+			for k, t := range l.lastSeen {
+				if oldestKey == "" || t.Before(oldestTime) {
+					oldestKey = k
+					oldestTime = t
+				}
+			}
+			if oldestKey != "" {
+				delete(l.visitors, oldestKey)
+				delete(l.lastSeen, oldestKey)
+			}
+		}
 		limiter = rate.NewLimiter(l.limit, l.burst)
 		l.visitors[key] = limiter
 	}

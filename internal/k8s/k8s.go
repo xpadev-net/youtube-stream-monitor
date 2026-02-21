@@ -186,7 +186,7 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 		},
 		Spec: corev1.PodSpec{
 			TerminationGracePeriodSeconds: int64Ptr(30),
-			RestartPolicy:                 corev1.RestartPolicyOnFailure,
+			RestartPolicy:                 corev1.RestartPolicyNever,
 			Volumes: []corev1.Volume{
 				{
 					Name: "workdir",
@@ -233,6 +233,16 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 						TimeoutSeconds:      5,
 						FailureThreshold:    3,
 					},
+					SecurityContext: &corev1.SecurityContext{
+						RunAsNonRoot:             boolPtr(true),
+						RunAsUser:                int64Ptr(1000),
+						RunAsGroup:               int64Ptr(1000),
+						ReadOnlyRootFilesystem:   boolPtr(true),
+						AllowPrivilegeEscalation: boolPtr(false),
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+					},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
 							corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -262,6 +272,10 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 }
 
 func int64Ptr(value int64) *int64 {
+	return &value
+}
+
+func boolPtr(value bool) *bool {
 	return &value
 }
 
