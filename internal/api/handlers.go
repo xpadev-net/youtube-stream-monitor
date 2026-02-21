@@ -137,27 +137,7 @@ func (h *Handler) CreateMonitor(c *gin.Context) {
 	}
 
 	// Build config
-	config := db.DefaultMonitorConfig()
-	if req.Config != nil {
-		if req.Config.CheckIntervalSec != nil {
-			config.CheckIntervalSec = *req.Config.CheckIntervalSec
-		}
-		if req.Config.BlackoutThresholdSec != nil {
-			config.BlackoutThresholdSec = *req.Config.BlackoutThresholdSec
-		}
-		if req.Config.SilenceThresholdSec != nil {
-			config.SilenceThresholdSec = *req.Config.SilenceThresholdSec
-		}
-		if req.Config.SilenceDBThreshold != nil {
-			config.SilenceDBThreshold = *req.Config.SilenceDBThreshold
-		}
-		if req.Config.ScheduledStartTime != nil {
-			config.ScheduledStartTime = req.Config.ScheduledStartTime
-		}
-		if req.Config.StartDelayToleranceSec != nil {
-			config.StartDelayToleranceSec = *req.Config.StartDelayToleranceSec
-		}
-	}
+	config := applyConfigOverrides(db.DefaultMonitorConfig(), req.Config)
 
 	// Build metadata
 	var metadata json.RawMessage
@@ -730,25 +710,7 @@ func (h *Handler) PatchMonitor(c *gin.Context) {
 
 	// Merge config if provided
 	if req.Config != nil {
-		mergedConfig := existing.Config
-		if req.Config.CheckIntervalSec != nil {
-			mergedConfig.CheckIntervalSec = *req.Config.CheckIntervalSec
-		}
-		if req.Config.BlackoutThresholdSec != nil {
-			mergedConfig.BlackoutThresholdSec = *req.Config.BlackoutThresholdSec
-		}
-		if req.Config.SilenceThresholdSec != nil {
-			mergedConfig.SilenceThresholdSec = *req.Config.SilenceThresholdSec
-		}
-		if req.Config.SilenceDBThreshold != nil {
-			mergedConfig.SilenceDBThreshold = *req.Config.SilenceDBThreshold
-		}
-		if req.Config.ScheduledStartTime != nil {
-			mergedConfig.ScheduledStartTime = req.Config.ScheduledStartTime
-		}
-		if req.Config.StartDelayToleranceSec != nil {
-			mergedConfig.StartDelayToleranceSec = *req.Config.StartDelayToleranceSec
-		}
+		mergedConfig := applyConfigOverrides(existing.Config, req.Config)
 		if err := mergedConfig.Validate(); err != nil {
 			httpapi.RespondError(c, http.StatusBadRequest, httpapi.ErrCodeInvalidConfig, err.Error())
 			return
@@ -870,6 +832,31 @@ func (h *Handler) ListEvents(c *gin.Context) {
 			Offset: params.Offset,
 		},
 	})
+}
+
+func applyConfigOverrides(base db.MonitorConfig, overrides *MonitorConfigRequest) db.MonitorConfig {
+	if overrides == nil {
+		return base
+	}
+	if overrides.CheckIntervalSec != nil {
+		base.CheckIntervalSec = *overrides.CheckIntervalSec
+	}
+	if overrides.BlackoutThresholdSec != nil {
+		base.BlackoutThresholdSec = *overrides.BlackoutThresholdSec
+	}
+	if overrides.SilenceThresholdSec != nil {
+		base.SilenceThresholdSec = *overrides.SilenceThresholdSec
+	}
+	if overrides.SilenceDBThreshold != nil {
+		base.SilenceDBThreshold = *overrides.SilenceDBThreshold
+	}
+	if overrides.ScheduledStartTime != nil {
+		base.ScheduledStartTime = overrides.ScheduledStartTime
+	}
+	if overrides.StartDelayToleranceSec != nil {
+		base.StartDelayToleranceSec = *overrides.StartDelayToleranceSec
+	}
+	return base
 }
 
 func isValidYouTubeWatchURL(urlStr string) bool {

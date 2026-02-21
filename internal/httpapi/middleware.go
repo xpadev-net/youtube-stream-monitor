@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"container/heap"
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
@@ -88,13 +89,13 @@ func (h visitorHeap) Swap(i, j int) {
 	h[j].index = j
 }
 
-func (h *visitorHeap) Push(x interface{}) {
+func (h *visitorHeap) Push(x any) {
 	entry := x.(*visitorEntry)
 	entry.index = len(*h)
 	*h = append(*h, entry)
 }
 
-func (h *visitorHeap) Pop() interface{} {
+func (h *visitorHeap) Pop() any {
 	old := *h
 	n := len(old)
 	entry := old[n-1]
@@ -112,13 +113,14 @@ type rateLimiter struct {
 	mu          sync.Mutex
 	visitors    map[string]*rate.Limiter
 	entries     map[string]*visitorEntry
-	heap        visitorHeap
+	minHeap     visitorHeap
 }
 
 type limiterRegistry struct {
 	mu       sync.Mutex
 	limiters map[string]*rateLimiter
 	once     sync.Once
+	cancel   context.CancelFunc
 }
 
 var sharedLimiters = &limiterRegistry{limiters: make(map[string]*rateLimiter)}
@@ -135,7 +137,7 @@ func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 		maxVisitors: defaultMaxVisitors,
 		visitors:    make(map[string]*rate.Limiter),
 		entries:     make(map[string]*visitorEntry),
-		heap:        make(visitorHeap, 0),
+		minHeap:     make(visitorHeap, 0),
 	}
 }
 
@@ -144,8 +146,8 @@ func (l *rateLimiter) cleanup(now time.Time) {
 	defer l.mu.Unlock()
 
 	cutoff := now.Add(-l.window)
-	for l.heap.Len() > 0 && l.heap[0].lastSeen.Before(cutoff) {
-		entry := heap.Pop(&l.heap).(*visitorEntry)
+	for l.minHeap.Len() > 0 && l.minHeap[0].lastSeen.Before(cutoff) {
+		entry := heap.Pop(&l.minHeap).(*visitorEntry)
 		delete(l.visitors, entry.key)
 		delete(l.entries, entry.key)
 	}
@@ -158,9 +160,14 @@ func (l *rateLimiter) getLimiter(key string) *rate.Limiter {
 	limiter, exists := l.visitors[key]
 	now := time.Now()
 	if !exists {
+		// Invariant: len(l.visitors) == l.minHeap.Len() and every
+		// insert/delete to l.visitors is paired with heap.Push/heap.Pop.
 		if len(l.visitors) >= l.maxVisitors {
-			// Evict the oldest entry via heap pop - O(log n)
-			entry := heap.Pop(&l.heap).(*visitorEntry)
+			if l.minHeap.Len() == 0 {
+				// Should never happen if invariant holds; defensive guard.
+				panic("httpapi: rateLimiter invariant violated: visitors at capacity but minHeap is empty")
+			}
+			entry := heap.Pop(&l.minHeap).(*visitorEntry)
 			delete(l.visitors, entry.key)
 			delete(l.entries, entry.key)
 		}
@@ -168,12 +175,12 @@ func (l *rateLimiter) getLimiter(key string) *rate.Limiter {
 		l.visitors[key] = limiter
 		entry := &visitorEntry{key: key, lastSeen: now}
 		l.entries[key] = entry
-		heap.Push(&l.heap, entry)
+		heap.Push(&l.minHeap, entry)
 	} else {
 		// Update lastSeen and fix heap position - O(log n)
 		entry := l.entries[key]
 		entry.lastSeen = now
-		heap.Fix(&l.heap, entry.index)
+		heap.Fix(&l.minHeap, entry.index)
 	}
 	return limiter
 }
@@ -187,7 +194,9 @@ func (r *limiterRegistry) get(limit int, window time.Duration) *rateLimiter {
 		limiter = newRateLimiter(limit, window)
 		r.limiters[key] = limiter
 		r.once.Do(func() {
-			go r.cleanupLoop()
+			ctx, cancel := context.WithCancel(context.Background())
+			r.cancel = cancel
+			go r.cleanupLoop(ctx)
 		})
 	}
 	r.mu.Unlock()
@@ -195,15 +204,20 @@ func (r *limiterRegistry) get(limit int, window time.Duration) *rateLimiter {
 	return limiter
 }
 
-func (r *limiterRegistry) cleanupLoop() {
+func (r *limiterRegistry) cleanupLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	for now := range ticker.C {
-		r.mu.Lock()
-		for _, limiter := range r.limiters {
-			limiter.cleanup(now)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			r.mu.Lock()
+			for _, limiter := range r.limiters {
+				limiter.cleanup(now)
+			}
+			r.mu.Unlock()
 		}
-		r.mu.Unlock()
 	}
 }
 
