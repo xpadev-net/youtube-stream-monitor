@@ -211,12 +211,12 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{
-							Name:      "tmp",
-							MountPath: "/tmp",
-						},
-						{
 							Name:      "workdir",
 							MountPath: "/tmp/segments",
+						},
+						{
+							Name:      "tmp",
+							MountPath: "/tmp/worker",
 						},
 					},
 					LivenessProbe: &corev1.Probe{
