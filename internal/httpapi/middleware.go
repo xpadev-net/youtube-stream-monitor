@@ -130,7 +130,7 @@ func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 	if interval <= 0 {
 		interval = time.Second
 	}
-	return &rateLimiter{
+	rl := &rateLimiter{
 		limit:       rate.Every(interval),
 		burst:       limit,
 		window:      window,
@@ -139,6 +139,8 @@ func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 		entries:     make(map[string]*visitorEntry),
 		minHeap:     make(visitorHeap, 0),
 	}
+	heap.Init(&rl.minHeap)
+	return rl
 }
 
 func (l *rateLimiter) cleanup(now time.Time) {
