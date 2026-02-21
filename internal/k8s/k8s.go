@@ -186,10 +186,16 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 		},
 		Spec: corev1.PodSpec{
 			TerminationGracePeriodSeconds: int64Ptr(30),
-			RestartPolicy:                 corev1.RestartPolicyOnFailure,
+			RestartPolicy:                 corev1.RestartPolicyNever,
 			Volumes: []corev1.Volume{
 				{
 					Name: "workdir",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+				{
+					Name: "tmp",
 					VolumeSource: corev1.VolumeSource{
 						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
@@ -207,6 +213,10 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 						{
 							Name:      "workdir",
 							MountPath: "/tmp/segments",
+						},
+						{
+							Name:      "tmp",
+							MountPath: "/tmp/worker",
 						},
 					},
 					LivenessProbe: &corev1.Probe{
@@ -232,6 +242,16 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 						PeriodSeconds:       10,
 						TimeoutSeconds:      5,
 						FailureThreshold:    3,
+					},
+					SecurityContext: &corev1.SecurityContext{
+						RunAsNonRoot:             boolPtr(true),
+						RunAsUser:                int64Ptr(1000),
+						RunAsGroup:               int64Ptr(1000),
+						ReadOnlyRootFilesystem:   boolPtr(true),
+						AllowPrivilegeEscalation: boolPtr(false),
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
 					},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
@@ -262,6 +282,10 @@ func (c *Client) CreateWorkerPod(ctx context.Context, params CreatePodParams) (*
 }
 
 func int64Ptr(value int64) *int64 {
+	return &value
+}
+
+func boolPtr(value bool) *bool {
 	return &value
 }
 

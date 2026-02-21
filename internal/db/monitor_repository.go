@@ -456,6 +456,164 @@ func (r *MonitorRepository) CountActiveMonitors(ctx context.Context) (int, error
 	return count, nil
 }
 
+// ErrMonitorNotActive is returned when trying to update a non-active monitor.
+var ErrMonitorNotActive = errors.New("monitor is not in an active state")
+
+// UpdateMonitorParams contains parameters for updating a monitor.
+type UpdateMonitorParams struct {
+	CallbackURL *string
+	Config      *MonitorConfig
+}
+
+// UpdateMonitor updates an active monitor's callback_url and/or config.
+func (r *MonitorRepository) UpdateMonitor(ctx context.Context, id string, params UpdateMonitorParams) (*Monitor, error) {
+	// Build dynamic SET clause
+	setClauses := []string{"updated_at = NOW()"}
+	var args []interface{}
+	argIdx := 1
+
+	args = append(args, id)
+	argIdx++
+
+	if params.CallbackURL != nil {
+		setClauses = append(setClauses, fmt.Sprintf("callback_url = $%d", argIdx))
+		args = append(args, *params.CallbackURL)
+		argIdx++
+	}
+
+	if params.Config != nil {
+		configJSON, err := json.Marshal(params.Config)
+		if err != nil {
+			return nil, fmt.Errorf("marshal config: %w", err)
+		}
+		setClauses = append(setClauses, fmt.Sprintf("config = $%d", argIdx))
+		args = append(args, configJSON)
+		argIdx++
+	}
+
+	// Parameterize status constants instead of interpolating them
+	statusPlaceholders := fmt.Sprintf("$%d, $%d, $%d", argIdx, argIdx+1, argIdx+2)
+	args = append(args, StatusInitializing, StatusWaiting, StatusMonitoring)
+
+	query := fmt.Sprintf(`
+		UPDATE monitors
+		SET %s
+		WHERE id = $1 AND status IN (%s)
+		RETURNING id, stream_url, callback_url, config, metadata, status, pod_name, created_at, updated_at
+	`, strings.Join(setClauses, ", "), statusPlaceholders)
+
+	var monitor Monitor
+	var configJSON []byte
+
+	err := r.db.pool.QueryRow(ctx, query, args...).Scan(
+		&monitor.ID,
+		&monitor.StreamURL,
+		&monitor.CallbackURL,
+		&configJSON,
+		&monitor.Metadata,
+		&monitor.Status,
+		&monitor.PodName,
+		&monitor.CreatedAt,
+		&monitor.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Check if the monitor exists but is not active
+			_, getErr := r.GetByID(ctx, id)
+			if getErr != nil {
+				if errors.Is(getErr, ErrMonitorNotFound) {
+					return nil, ErrMonitorNotFound
+				}
+				return nil, getErr
+			}
+			return nil, ErrMonitorNotActive
+		}
+		return nil, fmt.Errorf("update monitor: %w", err)
+	}
+
+	if err := json.Unmarshal(configJSON, &monitor.Config); err != nil {
+		return nil, fmt.Errorf("unmarshal config: %w", err)
+	}
+
+	return &monitor, nil
+}
+
+// ListEventsParams contains parameters for listing events.
+type ListEventsParams struct {
+	Limit  int
+	Offset int
+}
+
+// ListEvents retrieves events for a monitor with pagination.
+func (r *MonitorRepository) ListEvents(ctx context.Context, monitorID string, params ListEventsParams) ([]*MonitorEvent, int, error) {
+	if params.Limit <= 0 {
+		params.Limit = 50
+	}
+	if params.Limit > 100 {
+		params.Limit = 100
+	}
+
+	// Count total
+	var total int
+	err := r.db.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM monitor_events WHERE monitor_id = $1
+	`, monitorID).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count events: %w", err)
+	}
+
+	// Fetch events
+	rows, err := r.db.pool.Query(ctx, `
+		SELECT id, monitor_id, event_type, payload, webhook_status, webhook_attempts, webhook_last_error, created_at, sent_at
+		FROM monitor_events
+		WHERE monitor_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3
+	`, monitorID, params.Limit, params.Offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*MonitorEvent
+	for rows.Next() {
+		var event MonitorEvent
+		if err := rows.Scan(
+			&event.ID,
+			&event.MonitorID,
+			&event.EventType,
+			&event.Payload,
+			&event.WebhookStatus,
+			&event.WebhookAttempts,
+			&event.WebhookLastError,
+			&event.CreatedAt,
+			&event.SentAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan event: %w", err)
+		}
+		events = append(events, &event)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate events: %w", err)
+	}
+
+	return events, total, nil
+}
+
+// DeleteStaleMonitors deletes monitors in terminal states older than the given time.
+func (r *MonitorRepository) DeleteStaleMonitors(ctx context.Context, olderThan time.Time) (int64, error) {
+	result, err := r.db.pool.Exec(ctx, `
+		DELETE FROM monitors
+		WHERE status IN ($1, $2, $3) AND updated_at < $4
+	`, StatusCompleted, StatusStopped, StatusError, olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("delete stale monitors: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
 func isDuplicateKeyError(err error) bool {
 	// pgx v5 returns errors with SQLSTATE
 	return err != nil && (strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "duplicate key"))

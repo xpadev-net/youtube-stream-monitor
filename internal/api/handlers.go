@@ -137,26 +137,10 @@ func (h *Handler) CreateMonitor(c *gin.Context) {
 	}
 
 	// Build config
-	config := db.DefaultMonitorConfig()
-	if req.Config != nil {
-		if req.Config.CheckIntervalSec != nil {
-			config.CheckIntervalSec = *req.Config.CheckIntervalSec
-		}
-		if req.Config.BlackoutThresholdSec != nil {
-			config.BlackoutThresholdSec = *req.Config.BlackoutThresholdSec
-		}
-		if req.Config.SilenceThresholdSec != nil {
-			config.SilenceThresholdSec = *req.Config.SilenceThresholdSec
-		}
-		if req.Config.SilenceDBThreshold != nil {
-			config.SilenceDBThreshold = *req.Config.SilenceDBThreshold
-		}
-		if req.Config.ScheduledStartTime != nil {
-			config.ScheduledStartTime = req.Config.ScheduledStartTime
-		}
-		if req.Config.StartDelayToleranceSec != nil {
-			config.StartDelayToleranceSec = *req.Config.StartDelayToleranceSec
-		}
+	config := applyConfigOverrides(db.DefaultMonitorConfig(), req.Config)
+	if err := config.Validate(); err != nil {
+		httpapi.RespondError(c, http.StatusBadRequest, httpapi.ErrCodeInvalidConfig, err.Error())
+		return
 	}
 
 	// Build metadata
@@ -671,6 +655,209 @@ func (h *Handler) RecordWebhookEvent(c *gin.Context) {
 		"event_id":   event.ID.String(),
 		"monitor_id": monitorID,
 	})
+}
+
+// PatchMonitorRequest represents the request body for updating a monitor.
+type PatchMonitorRequest struct {
+	CallbackURL *string              `json:"callback_url,omitempty"`
+	Config      *MonitorConfigRequest `json:"config,omitempty"`
+}
+
+// PatchMonitor handles PATCH /api/v1/monitors/:monitor_id
+func (h *Handler) PatchMonitor(c *gin.Context) {
+	monitorID := c.Param("monitor_id")
+	if !ids.IsValidMonitorID(monitorID) {
+		httpapi.RespondNotFound(c, "Monitor not found")
+		return
+	}
+
+	var req PatchMonitorRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpapi.RespondValidationError(c, "Invalid request body: "+err.Error())
+		return
+	}
+
+	// Ensure at least one field is being updated
+	if req.CallbackURL == nil && req.Config == nil {
+		httpapi.RespondValidationError(c, "At least one of callback_url or config must be provided")
+		return
+	}
+
+	// Validate callback URL if provided
+	if req.CallbackURL != nil {
+		if _, err := url.ParseRequestURI(*req.CallbackURL); err != nil {
+			httpapi.RespondValidationError(c, "Invalid callback URL")
+			return
+		}
+		if err := validation.ValidateOutboundURL(c.Request.Context(), *req.CallbackURL, false); err != nil {
+			httpapi.RespondValidationError(c, fmt.Sprintf("Invalid callback URL: %s", err.Error()))
+			return
+		}
+	}
+
+	// Build update params
+	params := db.UpdateMonitorParams{
+		CallbackURL: req.CallbackURL,
+	}
+
+	// Merge config if provided — only fetch existing monitor when needed
+	if req.Config != nil {
+		existing, err := h.repo.GetByID(c.Request.Context(), monitorID)
+		if err != nil {
+			if errors.Is(err, db.ErrMonitorNotFound) {
+				httpapi.RespondNotFound(c, "Monitor not found")
+				return
+			}
+			log.Error("failed to get monitor", zap.Error(err))
+			httpapi.RespondInternalError(c, "Failed to get monitor")
+			return
+		}
+		mergedConfig := applyConfigOverrides(existing.Config, req.Config)
+		if err := mergedConfig.Validate(); err != nil {
+			httpapi.RespondError(c, http.StatusBadRequest, httpapi.ErrCodeInvalidConfig, err.Error())
+			return
+		}
+		params.Config = &mergedConfig
+	}
+
+	updated, err := h.repo.UpdateMonitor(c.Request.Context(), monitorID, params)
+	if err != nil {
+		if errors.Is(err, db.ErrMonitorNotFound) {
+			httpapi.RespondNotFound(c, "Monitor not found")
+			return
+		}
+		if errors.Is(err, db.ErrMonitorNotActive) {
+			httpapi.RespondConflict(c, httpapi.ErrCodeMonitorNotActive,
+				"Monitor is not in an active state and cannot be updated")
+			return
+		}
+		log.Error("failed to update monitor", zap.Error(err))
+		httpapi.RespondInternalError(c, "Failed to update monitor")
+		return
+	}
+
+	log.Info("monitor updated",
+		zap.String("monitor_id", monitorID),
+	)
+
+	httpapi.RespondOK(c, GetMonitorResponse{
+		MonitorID: updated.ID,
+		StreamURL: updated.StreamURL,
+		Status:    string(updated.Status),
+		CreatedAt: updated.CreatedAt.Format(time.RFC3339),
+	})
+}
+
+// ListEventsResponse represents the response for listing events.
+type ListEventsResponse struct {
+	Events     []EventSummary `json:"events"`
+	Pagination PaginationInfo `json:"pagination"`
+}
+
+// EventSummary represents an event in the list response.
+type EventSummary struct {
+	EventID       string  `json:"event_id"`
+	MonitorID     string  `json:"monitor_id"`
+	EventType     string  `json:"event_type"`
+	WebhookStatus string  `json:"webhook_status"`
+	CreatedAt     string  `json:"created_at"`
+	SentAt        *string `json:"sent_at,omitempty"`
+}
+
+// ListEvents handles GET /api/v1/monitors/:monitor_id/events
+func (h *Handler) ListEvents(c *gin.Context) {
+	monitorID := c.Param("monitor_id")
+	if !ids.IsValidMonitorID(monitorID) {
+		httpapi.RespondNotFound(c, "Monitor not found")
+		return
+	}
+
+	// Check monitor exists
+	_, err := h.repo.GetByID(c.Request.Context(), monitorID)
+	if err != nil {
+		if errors.Is(err, db.ErrMonitorNotFound) {
+			httpapi.RespondNotFound(c, "Monitor not found")
+			return
+		}
+		log.Error("failed to get monitor", zap.Error(err))
+		httpapi.RespondInternalError(c, "Failed to get monitor")
+		return
+	}
+
+	// Parse query parameters
+	var params db.ListEventsParams
+
+	params.Limit = 50
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil {
+			params.Limit = min(max(parsed, 0), 100)
+		}
+	}
+	if params.Limit == 0 {
+		params.Limit = 50
+	}
+
+	if offsetStr := c.Query("offset"); offsetStr != "" {
+		if parsed, err := strconv.Atoi(offsetStr); err == nil {
+			params.Offset = max(parsed, 0)
+		}
+	}
+
+	events, total, err := h.repo.ListEvents(c.Request.Context(), monitorID, params)
+	if err != nil {
+		log.Error("failed to list events", zap.Error(err))
+		httpapi.RespondInternalError(c, "Failed to list events")
+		return
+	}
+
+	summaries := make([]EventSummary, len(events))
+	for i, e := range events {
+		summaries[i] = EventSummary{
+			EventID:       e.ID.String(),
+			MonitorID:     e.MonitorID,
+			EventType:     e.EventType,
+			WebhookStatus: string(e.WebhookStatus),
+			CreatedAt:     e.CreatedAt.Format(time.RFC3339),
+		}
+		if e.SentAt != nil {
+			sentAt := e.SentAt.Format(time.RFC3339)
+			summaries[i].SentAt = &sentAt
+		}
+	}
+
+	httpapi.RespondOK(c, ListEventsResponse{
+		Events: summaries,
+		Pagination: PaginationInfo{
+			Total:  total,
+			Limit:  params.Limit,
+			Offset: params.Offset,
+		},
+	})
+}
+
+func applyConfigOverrides(base db.MonitorConfig, overrides *MonitorConfigRequest) db.MonitorConfig {
+	if overrides == nil {
+		return base
+	}
+	if overrides.CheckIntervalSec != nil {
+		base.CheckIntervalSec = *overrides.CheckIntervalSec
+	}
+	if overrides.BlackoutThresholdSec != nil {
+		base.BlackoutThresholdSec = *overrides.BlackoutThresholdSec
+	}
+	if overrides.SilenceThresholdSec != nil {
+		base.SilenceThresholdSec = *overrides.SilenceThresholdSec
+	}
+	if overrides.SilenceDBThreshold != nil {
+		base.SilenceDBThreshold = *overrides.SilenceDBThreshold
+	}
+	if overrides.ScheduledStartTime != nil {
+		base.ScheduledStartTime = overrides.ScheduledStartTime
+	}
+	if overrides.StartDelayToleranceSec != nil {
+		base.StartDelayToleranceSec = *overrides.StartDelayToleranceSec
+	}
+	return base
 }
 
 func isValidYouTubeWatchURL(urlStr string) bool {

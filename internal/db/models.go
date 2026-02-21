@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,6 +62,26 @@ type MonitorConfig struct {
 	SilenceDBThreshold     float64    `json:"silence_db_threshold"`
 	ScheduledStartTime     *time.Time `json:"scheduled_start_time,omitempty"`
 	StartDelayToleranceSec int        `json:"start_delay_tolerance_sec"`
+}
+
+// ValidateMonitorConfig validates that config values are within acceptable ranges.
+func (c MonitorConfig) Validate() error {
+	if c.CheckIntervalSec <= 0 {
+		return fmt.Errorf("check_interval_sec must be greater than 0")
+	}
+	if c.BlackoutThresholdSec < 0 {
+		return fmt.Errorf("blackout_threshold_sec must be non-negative")
+	}
+	if c.SilenceThresholdSec < 0 {
+		return fmt.Errorf("silence_threshold_sec must be non-negative")
+	}
+	if c.SilenceDBThreshold > 0 {
+		return fmt.Errorf("silence_db_threshold must be non-positive (in dB)")
+	}
+	if c.StartDelayToleranceSec < 0 {
+		return fmt.Errorf("start_delay_tolerance_sec must be non-negative")
+	}
+	return nil
 }
 
 // DefaultMonitorConfig returns the default monitor configuration.

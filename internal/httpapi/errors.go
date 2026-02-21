@@ -20,7 +20,8 @@ const (
 	ErrCodeValidation        ErrorCode = "VALIDATION_ERROR"
 	ErrCodeInvalidURL        ErrorCode = "INVALID_URL"
 	ErrCodeInvalidConfig     ErrorCode = "INVALID_CONFIG"
-	ErrCodeRateLimitExceeded ErrorCode = "RATE_LIMIT_EXCEEDED"
+	ErrCodeRateLimitExceeded  ErrorCode = "RATE_LIMIT_EXCEEDED"
+	ErrCodeMonitorNotActive  ErrorCode = "MONITOR_NOT_ACTIVE"
 
 	// Server errors
 	ErrCodeInternal   ErrorCode = "INTERNAL_ERROR"

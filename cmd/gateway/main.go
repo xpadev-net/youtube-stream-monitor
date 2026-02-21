@@ -109,6 +109,14 @@ func main() {
 		go reconciler.RunPeriodic(reconcileCtx, cfg.ReconcileInterval)
 	}
 
+	// Start periodic cleanup of stale monitors
+	var cleanupCancel context.CancelFunc
+	if cfg.CleanupInterval > 0 {
+		var cleanupCtx context.Context
+		cleanupCtx, cleanupCancel = context.WithCancel(context.Background())
+		go runCleanupLoop(cleanupCtx, repo, cfg.CleanupInterval, cfg.MonitorRetentionPeriod)
+	}
+
 	// Set Gin mode based on environment
 	if cfg.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -130,6 +138,8 @@ func main() {
 		v1.POST("/monitors", httpapi.RateLimit(10, time.Minute), handler.CreateMonitor)
 		v1.GET("/monitors", httpapi.RateLimit(100, time.Minute), handler.ListMonitors)
 		v1.GET("/monitors/:monitor_id", httpapi.RateLimit(100, time.Minute), handler.GetMonitor)
+		v1.PATCH("/monitors/:monitor_id", httpapi.RateLimit(10, time.Minute), handler.PatchMonitor)
+		v1.GET("/monitors/:monitor_id/events", httpapi.RateLimit(100, time.Minute), handler.ListEvents)
 		v1.DELETE("/monitors/:monitor_id", handler.DeleteMonitor)
 	}
 
@@ -170,6 +180,11 @@ func main() {
 		reconcileCancel()
 	}
 
+	// Stop periodic cleanup
+	if cleanupCancel != nil {
+		cleanupCancel()
+	}
+
 	// Graceful shutdown
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
@@ -194,6 +209,33 @@ func readyzHandler(database *db.DB) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	}
+}
+
+func runCleanupLoop(ctx context.Context, repo *db.MonitorRepository, interval, retention time.Duration) {
+	log.Info("starting periodic monitor cleanup",
+		zap.Duration("interval", interval),
+		zap.Duration("retention", retention),
+	)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("periodic monitor cleanup stopped")
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-retention)
+			opCtx, opCancel := context.WithTimeout(ctx, 30*time.Second)
+			deleted, err := repo.DeleteStaleMonitors(opCtx, cutoff)
+			opCancel()
+			if err != nil {
+				log.Error("monitor cleanup failed", zap.Error(err))
+			} else if deleted > 0 {
+				log.Info("stale monitors cleaned up", zap.Int64("deleted", deleted))
+			}
+		}
 	}
 }
 
