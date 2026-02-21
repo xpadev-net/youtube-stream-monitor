@@ -106,6 +106,7 @@ type Worker struct {
 	shutdownRequested bool
 	shutdownCh        chan struct{}
 	cancelWork        context.CancelFunc
+	auditWg           sync.WaitGroup
 
 	// Metadata for webhooks
 	metadata json.RawMessage
@@ -693,7 +694,9 @@ func (w *Worker) sendWebhook(ctx context.Context, eventType webhook.EventType, d
 			errStr := result.Error
 			report.WebhookError = &errStr
 		}
+		w.auditWg.Add(1)
 		go func() {
+			defer w.auditWg.Done()
 			reportCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := w.callbackClient.ReportWebhookEvent(reportCtx, w.cfg.MonitorID, report); err != nil {
@@ -824,6 +827,18 @@ func (w *Worker) gracefulShutdown(ctx context.Context) error {
 
 	w.reportStatus(ctx, db.StatusStopped, nil)
 
+	// Wait for in-flight audit report goroutines with a bounded deadline.
+	done := make(chan struct{})
+	go func() {
+		w.auditWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		log.Warn("timed out waiting for audit report goroutines")
+	}
+
 	log.Info("graceful shutdown complete")
 	return nil
 }
@@ -879,13 +894,21 @@ func deepCopyMap(m map[string]interface{}) map[string]interface{} {
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
-		log.Warn("deepCopyMap marshal failed, using original map", zap.Error(err))
-		return m
+		log.Warn("deepCopyMap marshal failed, falling back to shallow copy", zap.Error(err))
+		return shallowCopyMap(m)
 	}
 	var cp map[string]interface{}
 	if err := json.Unmarshal(b, &cp); err != nil {
-		log.Warn("deepCopyMap unmarshal failed, using original map", zap.Error(err))
-		return m
+		log.Warn("deepCopyMap unmarshal failed, falling back to shallow copy", zap.Error(err))
+		return shallowCopyMap(m)
+	}
+	return cp
+}
+
+func shallowCopyMap(m map[string]interface{}) map[string]interface{} {
+	cp := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		cp[k] = v
 	}
 	return cp
 }

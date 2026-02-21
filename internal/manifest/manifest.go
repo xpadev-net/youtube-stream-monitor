@@ -52,18 +52,6 @@ func NewParserWithLimit(timeout time.Duration, maxSegmentBytes int64) *Parser {
 	}
 }
 
-// NewParserWithHTTPClient creates a manifest parser with a custom HTTP client.
-// This is intended for testing where the default SSRF-safe client blocks localhost.
-func NewParserWithHTTPClient(httpClient *http.Client, maxSegmentBytes int64) *Parser {
-	if maxSegmentBytes <= 0 {
-		maxSegmentBytes = 10 * 1024 * 1024
-	}
-	return &Parser{
-		httpClient:      httpClient,
-		maxSegmentBytes: maxSegmentBytes,
-	}
-}
-
 // GetLatestSegment retrieves the latest segment from the manifest URL.
 func (p *Parser) GetLatestSegment(ctx context.Context, manifestURL string) (*Segment, error) {
 	// Determine manifest type from URL

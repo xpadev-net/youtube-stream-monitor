@@ -7,10 +7,6 @@ import (
 	"testing"
 )
 
-func newTestParser() *Parser {
-	return NewParserWithHTTPClient(http.DefaultClient, 1024)
-}
-
 func TestGetLatestSegmentHLSMediaPlaylist(t *testing.T) {
 	m3u8 := `#EXTM3U
 #EXT-X-VERSION:3
